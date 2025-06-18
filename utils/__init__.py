@@ -64,6 +64,7 @@ def getDump(device, phase):
         device.shell(dumpstring)
         pullstring1, pullstring2 = "/sdcard/{0}.xml".format(phase), "xml/{0}.xml".format(phase)
         device.pull(pullstring1, pullstring2)
+        logger.debug("ppadb")
         logger.debug("Got xml dump from phone")
     except Exception:
         logger.exception("Error while getting dump from phone: ")
