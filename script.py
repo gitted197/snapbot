@@ -52,12 +52,12 @@ def mainScript(sys1, sys2):
     pointscounter = 0
     try:
         while pointscounter < points_input:
-            try:
-                if pointscounter % 5 == 0:
-                    logger.debug("Pointscounter dividable by 5. Restarting Snap")
-                    rebootSnap(device)
-                    pointsstr = str(pointscounter)
-                    logger.info("Rebooted Snap. Counter: " + pointsstr)
+            # try:
+            #     if pointscounter % 5 == 0:
+            #         logger.debug("Pointscounter dividable by 5. Restarting Snap")
+            #         rebootSnap(device)
+            #         pointsstr = str(pointscounter)
+            #         logger.info("Rebooted Snap. Counter: " + pointsstr)
                 
                 #Setting phase, to then find the bounds for that phase and clicking them on a random location
                 phase = "clicking_camera"
@@ -70,7 +70,7 @@ def mainScript(sys1, sys2):
                 click = ClickButton(phase, device)
                 click.ClickNow("com.snapchat.android:id/send_btn", None)
                 logger.debug("In user menu. Finding and clicking " + username_input + " now.")
-                sleep(1)
+                sleep(0.25)
 
                 phase = "clicking_user"
                 click = ClickButton(phase, device)
@@ -82,7 +82,7 @@ def mainScript(sys1, sys2):
                 click = ClickButton(phase, device)
                 click.ClickNow("com.snapchat.android:id/send_to_send_button", None)
                 logger.debug("Clicked send. Going back to camera.")
-                sleep(1)
+                sleep(0.25)
 
                 phase = "back_to_camera"
                 click = ClickButton(phase, device)
@@ -91,9 +91,9 @@ def mainScript(sys1, sys2):
 
                 pointscounter += 1 
                 logger.debug("Sent " + str(pointscounter) + " picture(s)")
-            except RuntimeError:
-                logger.debug("Too many clicking errors. Now rebooting snap.")
-                rebootSnap(device)
+    except RuntimeError:
+        logger.debug("Too many clicking errors. Now rebooting snap.")
+        rebootSnap(device)
     except Exception as e:
         logger.exception("Error while in sending snaps loop: " + str(e))
     logger.info("Done sending " + str(points_input) + " snaps!")
