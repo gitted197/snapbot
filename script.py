@@ -77,7 +77,7 @@ def mainScript(sys1, sys2):
                 click = ClickButton(phase, device)
                 click.ClickNow("com.snapchat.android:id/send_to_user", username_input)
                 logger.debug("Clicked " + username_input + " . Now clicking send.")
-                sleep(2)
+                sleep(0.25)
 
                 phase = "clicking_send"
                 click = ClickButton(phase, device)
