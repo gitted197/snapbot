@@ -33,7 +33,7 @@ def checkInt(points_input):
 def startSnap(device):
         try:
             device.shell("input keyevent KEYCODE_WAKEUP")
-            device.shell("input swipe 550 2100 550 500")
+            #device.shell("input swipe 550 2100 550 500")
             device.shell("su -c \"am force-stop com.snapchat.android\"")
             sleep(2)
             device.shell("su -c \"pm disable com.snapchat.android\"")
