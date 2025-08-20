@@ -42,7 +42,7 @@ class CurrentDump:
     def clickButtonRandomized(self, device, resourceId, username_input, phase, xmlpath):
 
         retryCounter = 0
-        while retryCounter < 5:
+        while retryCounter < 10:
             getDump(device, phase)
             self.tree = ET.parse(xmlpath)
             node = self.getNode(resourceId, username_input)
