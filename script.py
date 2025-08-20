@@ -53,11 +53,11 @@ def mainScript(sys1, sys2):
     try:
         while pointscounter < points_input:
             try:
-                #if pointscounter % 5 == 0:
-                #    logger.debug("Pointscounter dividable by 5. Restarting Snap")
-                #    rebootSnap(device)
-                #    pointsstr = str(pointscounter)
-                #    logger.info("Rebooted Snap. Counter: " + pointsstr)
+                if pointscounter % 10 == 0:
+                    logger.debug("Pointscounter dividable by 5. Restarting Snap")
+                    rebootSnap(device)
+                    pointsstr = str(pointscounter)
+                    logger.info("Rebooted Snap. Counter: " + pointsstr)
                 
                 #Setting phase, to then find the bounds for that phase and clicking them on a random location
                 phase = "clicking_camera"
@@ -93,8 +93,9 @@ def mainScript(sys1, sys2):
                 pointscounter += 1 
                 logger.debug("Sent " + str(pointscounter) + " picture(s)")
             except RuntimeError:
-                logger.debug("Too many clicking errors. Now rebooting snap.")
                 rebootSnap(device)
+                logger.debug("Too many clicking errors. Now rebooting snap.")
+                pass
     except Exception as e:
         logger.exception("Error while in sending snaps loop: " + e)
     logger.info("Done sending " + str(points_input) + " snaps!")
