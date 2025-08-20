@@ -2,6 +2,7 @@ from ppadb.client import Client as AdbClient
 from time import sleep
 import logging
 from utils.setup_logging import setLog
+import os
 
 logger = logging.getLogger(__name__)
 logger = setLog(logger)
@@ -32,28 +33,37 @@ def checkInt(points_input):
 
 def startSnap(device):
         try:
-            device.shell("input keyevent KEYCODE_WAKEUP")
+            #device.shell("input keyevent KEYCODE_WAKEUP")
+
             #device.shell("input swipe 550 2100 550 500")
-            device.shell("am force-stop com.snapchat.android")
+            #device.shell("am force-stop com.snapchat.android")
+            os.system(f"adb shell am force-stop com.snapchat.android")
             sleep(2)
-            device.shell("pm disable com.snapchat.android")
+            #device.shell("pm disable com.snapchat.android")
+            os.system(f"adb shell disable com.snapchat.android")
             sleep(3)
-            device.shell("pm enable com.snapchat.android")
+            #device.shell("pm enable com.snapchat.android")
+            os.system(f"adb shell enable com.snapchat.android")
             sleep(1)
-            device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            #device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            os.system(f"adb shell monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
             logger.debug("Succesfuly opened snap")
         except Exception:
             logger.exception("Error while starting snap: ")    
 
 def rebootSnap(device):
         try:
-            device.shell("am force-stop com.snapchat.android")
+            #device.shell("am force-stop com.snapchat.android")
+            os.system(f"adb shell am force-stop com.snapchat.android")
             sleep(2)
-            device.shell("pm disable com.snapchat.android")
+            #device.shell("pm disable com.snapchat.android")
+            os.system(f"adb shell disable com.snapchat.android")
             sleep(3)
-            device.shell("pm enable com.snapchat.android")
+            #device.shell("pm enable com.snapchat.android")
+            os.system(f"adb shell enable com.snapchat.android")
             sleep(1)
-            device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            #device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            os.system(f"adb shell monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
             logger.debug("Succesfuly opened snap")
         except Exception:
             logger.exception("Error while starting snap: ")  
