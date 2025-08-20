@@ -33,12 +33,12 @@ def checkInt(points_input):
 def startSnap(device):
         try:
             device.shell("input keyevent KEYCODE_WAKEUP")
-            device.shell("input swipe 550 2100 550 500")
-            device.shell("su -c \"am force-stop com.snapchat.android\"")
+            #device.shell("input swipe 550 2100 550 500")
+            device.shell("am force-stop com.snapchat.android\"")
             sleep(2)
-            device.shell("su -c \"pm disable com.snapchat.android\"")
+            device.shell("pm disable com.snapchat.android\"")
             sleep(3)
-            device.shell("su -c \"pm enable com.snapchat.android\"")
+            device.shell("pm enable com.snapchat.android\"")
             sleep(1)
             device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
             logger.debug("Succesfuly opened snap")
@@ -47,11 +47,11 @@ def startSnap(device):
 
 def rebootSnap(device):
         try:
-            device.shell("su\"am force-stop com.snapchat.android\"")
+            device.shell("am force-stop com.snapchat.android\"")
             sleep(2)
-            device.shell("su -c \"pm disable com.snapchat.android\"")
+            device.shell("pm disable com.snapchat.android\"")
             sleep(3)
-            device.shell("su -c \"pm enable com.snapchat.android\"")
+            device.shell("pm enable com.snapchat.android\"")
             sleep(1)
             device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
             logger.debug("Succesfuly opened snap")

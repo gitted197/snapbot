@@ -37,6 +37,7 @@ def mainScript(sys1, sys2):
     #Connecting to phone
     try:
         device = adbConnection()
+        logger.debug(device)
         logger.debug("Set adbConnection")
     except Exception:
         logger.exception("Error while setting up adbConnection: ")
