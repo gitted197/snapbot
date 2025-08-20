@@ -53,11 +53,11 @@ def mainScript(sys1, sys2):
     try:
         while pointscounter < points_input:
             try:
-                if pointscounter % 5 == 0:
-                    logger.debug("Pointscounter dividable by 5. Restarting Snap")
-                    rebootSnap(device)
-                    pointsstr = str(pointscounter)
-                    logger.info("Rebooted Snap. Counter: " + pointsstr)
+                #if pointscounter % 5 == 0:
+                #    logger.debug("Pointscounter dividable by 5. Restarting Snap")
+                #    rebootSnap(device)
+                #    pointsstr = str(pointscounter)
+                #    logger.info("Rebooted Snap. Counter: " + pointsstr)
                 
                 #Setting phase, to then find the bounds for that phase and clicking them on a random location
                 phase = "clicking_camera"

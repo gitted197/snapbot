@@ -1,8 +1,7 @@
-import discord
-from discord.ext import commands
+import discord # type: ignore
+from discord.ext import commands # type: ignore
 import logging
 from utils.setup_logging import setLog
-#import os
 
 logger = logging.getLogger(__name__)
 logger = setLog(logger)
