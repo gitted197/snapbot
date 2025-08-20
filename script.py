@@ -27,19 +27,6 @@ def mainScript(sys1, sys2):
         except Exception:
             logger.exception("Error while setting points to int in mainScript:")
             continue
-<<<<<<< HEAD
-    
-    #Start ADB
-    try:
-        subprocess.run(['adb', 'devices'])
-    except Exception:
-        logger.exception("Failed to start adb daemon")
-            
-    #Connecting to phone
-    try:
-        device = adbConnection()
-        logger.debug(device)
-=======
             
     #Start ADB Daemon
     try:
@@ -50,7 +37,6 @@ def mainScript(sys1, sys2):
     #Connecting to phone
     try:
         device = adbConnection()
->>>>>>> 367aef1 (original)
         logger.debug("Set adbConnection")
     except Exception:
         logger.exception("Error while setting up adbConnection: ")
@@ -66,29 +52,17 @@ def mainScript(sys1, sys2):
     pointscounter = 0
     try:
         while pointscounter < points_input:
-<<<<<<< HEAD
-            # try:
-            #     if pointscounter % 5 == 0:
-            #         logger.debug("Pointscounter dividable by 5. Restarting Snap")
-            #         rebootSnap(device)
-            #         pointsstr = str(pointscounter)
-            #         logger.info("Rebooted Snap. Counter: " + pointsstr)
-=======
             try:
                 if pointscounter % 5 == 0:
                     logger.debug("Pointscounter dividable by 5. Restarting Snap")
                     rebootSnap(device)
                     pointsstr = str(pointscounter)
                     logger.info("Rebooted Snap. Counter: " + pointsstr)
->>>>>>> 367aef1 (original)
                 
                 #Setting phase, to then find the bounds for that phase and clicking them on a random location
                 phase = "clicking_camera"
                 click = ClickButton(phase, device)
-<<<<<<< HEAD
-=======
                 sleep(1)
->>>>>>> 367aef1 (original)
                 click.ClickNow("com.snapchat.android:id/camera_capture_button", None)
                 logger.debug("Clicked camera button, now sleeping, then looking for send to")
                 sleep(1)
@@ -97,11 +71,7 @@ def mainScript(sys1, sys2):
                 click = ClickButton(phase, device)
                 click.ClickNow("com.snapchat.android:id/send_btn", None)
                 logger.debug("In user menu. Finding and clicking " + username_input + " now.")
-<<<<<<< HEAD
                 sleep(0.25)
-=======
-                sleep(1)
->>>>>>> 367aef1 (original)
 
                 phase = "clicking_user"
                 click = ClickButton(phase, device)
@@ -113,11 +83,7 @@ def mainScript(sys1, sys2):
                 click = ClickButton(phase, device)
                 click.ClickNow("com.snapchat.android:id/send_to_send_button", None)
                 logger.debug("Clicked send. Going back to camera.")
-<<<<<<< HEAD
                 sleep(0.25)
-=======
-                sleep(1)
->>>>>>> 367aef1 (original)
 
                 phase = "back_to_camera"
                 click = ClickButton(phase, device)
@@ -126,20 +92,11 @@ def mainScript(sys1, sys2):
 
                 pointscounter += 1 
                 logger.debug("Sent " + str(pointscounter) + " picture(s)")
-<<<<<<< HEAD
-    except RuntimeError:
-        logger.debug("Too many clicking errors. Now rebooting snap.")
-        rebootSnap(device)
-        pass
-    except Exception as e:
-        logger.exception("Error while in sending snaps loop: " + str(e))
-=======
             except RuntimeError:
                 logger.debug("Too many clicking errors. Now rebooting snap.")
                 rebootSnap(device)
     except Exception as e:
         logger.exception("Error while in sending snaps loop: " + e)
->>>>>>> 367aef1 (original)
     logger.info("Done sending " + str(points_input) + " snaps!")
     exit
 
