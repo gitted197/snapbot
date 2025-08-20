@@ -42,11 +42,7 @@ class CurrentDump:
     def clickButtonRandomized(self, device, resourceId, username_input, phase, xmlpath):
 
         retryCounter = 0
-<<<<<<< HEAD
         while retryCounter < 10:
-=======
-        while retryCounter < 5:
->>>>>>> 367aef1 (original)
             getDump(device, phase)
             self.tree = ET.parse(xmlpath)
             node = self.getNode(resourceId, username_input)
@@ -70,11 +66,7 @@ class CurrentDump:
                 print(str(e))
                 retryCounter += 1
                 sleep(0.5)
-<<<<<<< HEAD
                 if retryCounter == 10:
-=======
-                if retryCounter == 4:
->>>>>>> 367aef1 (original)
                     print("Tried to find the button 5 times. Script is stopping now.")
                     exit()
                 continue
