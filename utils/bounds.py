@@ -66,7 +66,7 @@ class CurrentDump:
                 print(str(e))
                 retryCounter += 1
                 sleep(0.5)
-                if retryCounter == 4:
+                if retryCounter == 10:
                     print("Tried to find the button 5 times. Script is stopping now.")
                     exit()
                 continue
