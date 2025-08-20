@@ -1,5 +1,10 @@
+<<<<<<< HEAD
 .DS_Store
 utils/__pycache__/setup_logging.cpython-313.pyc
 utils/__pycache__/clicking.cpython-313.pyc
 utils/__pycache__/__init__.cpython-313.pyc
 botlog.log
+=======
+config.ini
+.DS_Store
+>>>>>>> 367aef1 (original)
