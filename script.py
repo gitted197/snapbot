@@ -62,7 +62,7 @@ def mainScript(sys1, sys2):
                 #Setting phase, to then find the bounds for that phase and clicking them on a random location
                 phase = "clicking_camera"
                 click = ClickButton(phase, device)
-                sleep(1)
+                #sleep(1)
                 click.ClickNow("com.snapchat.android:id/camera_capture_button", None)
                 logger.debug("Clicked camera button, now sleeping, then looking for send to")
                 sleep(1)
