@@ -41,6 +41,7 @@ def startSnap(device):
             #device.shell("pm enable com.snapchat.android")
             sleep(1)
             device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            sleep(1)
             logger.debug("Succesfuly opened snap")
         except Exception:
             logger.exception("Error while starting snap: ")    
@@ -54,6 +55,7 @@ def rebootSnap(device):
             #device.shell("pm enable com.snapchat.android")
             sleep(1)
             device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+            sleep(1)
             logger.debug("Succesfuly opened snap")
         except Exception:
             logger.exception("Error while starting snap: ")  
