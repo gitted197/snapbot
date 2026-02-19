@@ -39,7 +39,4 @@ Thanks J.
 
 ## Project status
 December '22 - Currently in development
-<<<<<<< HEAD
 # snapbot
-=======
->>>>>>> 367aef1 (original)

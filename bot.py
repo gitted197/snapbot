@@ -1,324 +1,226 @@
-import logging
-from utils.setup_logging import logger
-import discord
+import asyncio
 import configparser
-import threading
-from time import sleep
-from discord.ext import commands
-from utils.bot_utils import setEmbed, setAddSnapEmbed, setLoggingEmbed, getLogs
+import logging
+import os
+from dataclasses import dataclass, field
+from typing import Optional
+
+import discord  # type: ignore
+from discord.ext import commands  # type: ignore
+
 import script
 import script_adduser
-import sys
+from utils.bot_utils import setEmbed, setAddSnapEmbed, setLoggingEmbed, getLogs
+from utils.setup_logging import setup_logging
 
+setup_logging()
+logger = logging.getLogger(__name__)
 
-logger.debug("Starting script")
-logger.debug("Parsing and reading config.ini")
-config = configparser.ConfigParser()
-config.read('config.ini')
-logger.debug("Config read. Finding token.")
-token = config['BOT']['token']
+def _load_token() -> str:
+    # Prefer env var; fallback to config.ini for backwards compatibility
+    token = os.getenv("DISCORD_TOKEN")
+    if token:
+        return token
 
-logger.debug("Setting Discord intents")
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+    if "BOT" in config and "token" in config["BOT"]:
+        return config["BOT"]["token"]
+
+    raise RuntimeError("No Discord token found. Set DISCORD_TOKEN or provide config.ini with [BOT] token=...")
+
+@dataclass
+class BotState:
+    running: bool = False
+    points_counter: int = 0
+    last_error: Optional[str] = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+state = BotState()
+
 intents = discord.Intents.all()
-client = commands.Bot(command_prefix='!', intents=intents)
+client = commands.Bot(command_prefix="!", intents=intents)
 
-myThread = None
-myAddSnapThread = None
+@client.event
+async def on_ready():
+    logger.info("Logged in as %s", client.user)
 
 @client.command()
-async def snap(ctx):
+async def snap(ctx: commands.Context):
     booster = str(ctx.author)
-    logger.info("Snap command by: " + booster)
+    logger.info("Snap command by: %s", booster)
     await ctx.message.delete()
-    logger.debug("Snap command message deleted")
 
-    global myThread
-    global myAddSnapThread
-    #check if thread is running
-    logger.debug("Checking if snap thread is running")
-    if myThread is None or not myThread.is_alive():
-        logger.debug("Snap thread is not running. Setting embed")
-        description = ""
+    async with state.lock:
+        if state.running:
+            botmsg = await ctx.send("Program is currently running. Please try again later")
+            await asyncio.sleep(3)
+            await botmsg.delete()
+            return
+
+        state.running = True
+        state.last_error = None
+
+        description = "Enter the screenname to send snaps to (or /quit): "
         embed, description = setEmbed(description, booster)
         sent = await ctx.send(embed=embed)
-        logger.debug("Embed sent to channel")
 
         def check(msg):
             return msg.author == ctx.author and msg.channel == ctx.channel
-        
-        msg = await client.wait_for("message", check=check)
 
-        if msg.content != "/quit":
-            logger.debug("User message for setting screenname found")
+        try:
+            msg = await client.wait_for("message", check=check)
+            if msg.content == "/quit":
+                await msg.delete()
+                botmsg = await ctx.send("Program was stopped by user.")
+                await asyncio.sleep(3)
+                await botmsg.delete()
+                return
+
             username = msg.content
-            logger.info("Set screenname to send snaps to: " + username)
             await msg.delete()
-            logger.debug("Deleted screenname message")
             description = description + username + "\nEnter amount of points to generate: "
             embed, description = setEmbed(description, booster)
             await sent.edit(embed=embed)
-            logger.debug("Added screenname information to embed")
 
             while True:
                 msg = await client.wait_for("message", check=check)
-                logger.debug("Received message, checking for int")
-                if msg.content != "/quit":
-                    try:
-                        await msg.delete()
-                        logger.debug("Deleted potential int message")
-                        points = int(msg.content)
-                        logpoints = str(points)
-                        logger.info("Set points to generate to: " + logpoints)
-                        break
-                    except Exception:
-                        botmsg = await ctx.send("Error getting points input. Please try again after this message is gone.")
-                        logging.exception("Error while getting points input:")
-                        sleep(3)
-                        await botmsg.delete()
-                        logging.debug("Deleted bot error message")
-                        continue
-                else: 
+                if msg.content == "/quit":
                     await msg.delete()
                     botmsg = await ctx.send("Program was stopped by user.")
-                    logger.info("Program was stopped by user")
-                    sleep(3)
+                    await asyncio.sleep(3)
                     await botmsg.delete()
-                    logger.debug("Bot message deleted")
                     return
-        
+                try:
+                    await msg.delete()
+                    points = int(msg.content)
+                    break
+                except Exception:
+                    botmsg = await ctx.send("Error getting points input. Please try again.")
+                    logger.exception("Error while getting points input")
+                    await asyncio.sleep(3)
+                    await botmsg.delete()
 
-            strpoints = str(points)
-            description = description + strpoints + "\nNow generating points. Please wait."
+            description = description + str(points) + "\nNow generating. Please wait."
             embed, description = setEmbed(description, booster)
             await sent.edit(embed=embed)
-            logger.debug("Added points information to embed")
 
-            #sending variables to thread
-            myThread = threading.Thread(target=script.mainScript, args=(username, points), name="sending_snaps")
-            myThread.start()
-            logger.debug("Started thread for sending snaps")
-        else:
-            await msg.delete()
-            botmsg = await ctx.send("Program was stopped by user.")
-            logger.info("Program was stopped by user")
-            sleep(3)
-            await botmsg.delete()
-            logger.debug("Bot message deleted")
-    else:
-        botmsg = await ctx.send("Program is currently running. Please try again later")
-        logger.info("Snap thread is running. Prompted user to try again later")
-        sleep(3)
-        await botmsg.delete()
-        logger.debug("Bot message deleted")
+            # Run blocking script in a worker thread
+            try:
+                generated = await asyncio.to_thread(script.mainScript, username, points)
+                state.points_counter = generated
+            except Exception as e:
+                logger.exception("snap failed")
+                state.last_error = str(e)
+                await sent.edit(content=f"Fout: {e}")
+                return
+
+            description = description + f"\nDone. Generated {state.points_counter} points."
+            embed, description = setEmbed(description, booster)
+            await sent.edit(embed=embed)
+            await asyncio.sleep(5)
+            await sent.delete()
+
+        finally:
+            state.running = False
 
 @client.command()
-async def addsnap(ctx):
-    addfor = str(ctx.author)
-    logger.info("Addsnap command by: " + addfor)
+async def addsnap(ctx: commands.Context):
+    booster = str(ctx.author)
+    logger.info("AddSnap command by: %s", booster)
     await ctx.message.delete()
-    logger.debug("Addsnap command message deleted")
 
-    global myAddSnapThread
-    global myThread
-    #check if thread is running
-    logger.debug("Checking if addsnap thread is running")
-    if myAddSnapThread is None or not myAddSnapThread.is_alive():
-        logger.debug("Snap thread is not running. Setting embed")
-        description = ""
-        embed, description = setAddSnapEmbed(description, addfor)
+    async with state.lock:
+        if state.running:
+            botmsg = await ctx.send("Program is currently running. Please try again later")
+            await asyncio.sleep(3)
+            await botmsg.delete()
+            return
+
+        state.running = True
+        state.last_error = None
+
+        description = "Enter the screenname to add (or /quit): "
+        embed, description = setAddSnapEmbed(description, booster)
         sent = await ctx.send(embed=embed)
-        botmsgid = sent.id
-        logger.debug("Embed sent to channel")
 
         def check(msg):
             return msg.author == ctx.author and msg.channel == ctx.channel
-        
-        while True:
+
+        try:
             msg = await client.wait_for("message", check=check)
-            logger.debug("User message for setting username found. Checking validity")
-            try:
+            if msg.content == "/quit":
                 await msg.delete()
-                logger.debug("Deleted potential username message")
-                username = msg.content
-                if ("_" in username):
-                    usernameValidation = username.replace("_", "")
-                    if (usernameValidation.isalnum() == True):
-                        print("Valid1!")
-                        break
-                    else:
-                        botmsg = await ctx.send("Username can only contain A-Z, 0-9 and _ (underscore) sign. Please try again after this message is gone.")
-                        logging.exception("Error while getting username input:")
-                        sleep(3)
-                        await botmsg.delete()
-                        logging.debug("Deleted bot error message")
-                        continue
-                else:
-                    if (username.isalnum() == False):
-                        botmsg = await ctx.send("Username can only contain A-Z, 0-9 and _ (underscore) sign. Please try again after this message is gone.")
-                        logging.exception("Error while getting username input:")
-                        sleep(3)
-                        await botmsg.delete()
-                        logging.debug("Deleted bot error message")
-                        continue
-                    else:
-                        print("Isalnum!")
-                        break
-                #logger.info("Set username to add to account: " + username)
-            except Exception:
-                botmsg = await ctx.send("Error getting points input. Please try again after this message is gone.")
-                logging.exception("Error while getting points input:")
-                sleep(3)
+                botmsg = await ctx.send("Program was stopped by user.")
+                await asyncio.sleep(3)
                 await botmsg.delete()
-                logging.debug("Deleted bot error message")
-                continue
+                return
 
-        logger.info("Set username to add to account: " + username)
-        description = description + username + "\nUsername received. Will now add user: " + username + ". Please wait a few minutes before boosting."
-        embed, description = setAddSnapEmbed(description, addfor)
-        await sent.edit(embed=embed)
-        logger.debug("Added username information to embed")
+            username = msg.content
+            await msg.delete()
+            description = description + username + "\nAdding friend…"
+            embed, description = setAddSnapEmbed(description, booster)
+            await sent.edit(embed=embed)
 
-        print(username)
-        myAddSnapThread = threading.Thread(target=script_adduser.mainScriptAddSnap, args=(username,), name="adding_snap_account")
-        myAddSnapThread.start()
-        logger.debug("Started thread for adding account")
-    else:
-        botmsg = await ctx.send("Program is currently running. Please try again later")
-        logger.info("Add Snap thread is running. Prompted user to try again later")
-        sleep(3)
-        await botmsg.delete()
-        logger.debug("Bot message deleted")
+            rc = await asyncio.to_thread(script_adduser.mainScriptAddSnap, username)
+            if rc != 0:
+                await sent.edit(content="Fout bij toevoegen.")
+                return
+
+            description = description + "\nDone."
+            embed, description = setAddSnapEmbed(description, booster)
+            await sent.edit(embed=embed)
+            await asyncio.sleep(5)
+            await sent.delete()
+
+        finally:
+            state.running = False
 
 @client.command()
-async def status(ctx):
+async def status(ctx: commands.Context):
     checker = str(ctx.author)
-    logger.info("Status command by: " + checker)
+    logger.info("Status command by: %s", checker)
     await ctx.message.delete()
-    logger.debug("Status command message deleted")
 
-    global pointscounter
-    global myThread
-    #check if thread is running
-    logger.debug("Checking if snap thread is running")
-    if myThread is None or not myThread.is_alive():
-        logger.debug("Snap thread is not running. Setting embed")
+    if not state.running:
         embed = discord.Embed(
             title="Checked status for user " + checker,
-            description = "Bot is currently not generating points. Go ahead and boost your account! This message will delete in a few seconds."
+            description="Bot is currently not running. This message will delete in a few seconds.",
         )
-        sent = await ctx.send(embed=embed)
-        logger.debug("Embed sent to channel")
-        sleep(5)
-        await sent.delete()
-        logger.debug("Status embed deleted")
     else:
-        logger.debug("Snap thread is running.")
         embed = discord.Embed(
             title="Checked status for user " + checker,
-            description = "Bot is currently generating points. It has currently generated " + pointscounter + " points. This message will delete in a few seconds."
+            description=f"Bot is currently running. It has generated {state.points_counter} points so far.",
         )
-        sent = await ctx.send(embed=embed)
-        logger.debug("Embed sent to channel")
-        sleep(5)
-        await sent.delete()
 
-
-@client.command()
-async def purge(ctx):
-        await ctx.channel.delete()
-        new_channel = await ctx.channel.clone(reason="Channel was purged")
-        await new_channel.edit(position=ctx.channel.position)
-
+    sent = await ctx.send(embed=embed)
+    await asyncio.sleep(5)
+    await sent.delete()
 
 @client.command()
-async def logs(ctx):
+async def purge(ctx: commands.Context):
+    await ctx.channel.delete()
+    new_channel = await ctx.channel.clone(reason="Channel was purged")
+    await new_channel.edit(position=ctx.channel.position)
+
+@client.command()
+async def logs(ctx: commands.Context):
     logging_user = str(ctx.author)
-    logger.info("Logging command by: " + logging_user)
+    logger.info("Logs command by: %s", logging_user)
     await ctx.message.delete()
-    logger.debug("Logging command message deleted")
-    logger.debug("Setting embed")
-    description = ""
+
+    description = "Collecting logs…"
     embed, description = setLoggingEmbed(description, logging_user)
     sent = await ctx.send(embed=embed)
-    logger.debug("Embed sent to channel")
 
     loglines = getLogs()
-    logger.info(loglines)
-    logger.info(sys.getsizeof(loglines))
-    
-    description = description.join(loglines)
-    embed, description = setEmbed(description, logging_user)
-    logger.info(sys.getsizeof(embed))
+    description = "```" + loglines + "```"
+    embed = discord.Embed(
+        title="Logs for user " + logging_user,
+        description=description,
+    )
     await sent.edit(embed=embed)
-    logger.debug("Added logs to embed")
 
-
-    """def check(msg):
-        return msg.author == ctx.author and msg.channel == ctx.channel
-        
-    msg = await client.wait_for("message", check=check)
-
-        if msg.content != "/quit":
-            logger.debug("User message for setting screenname found")
-            username = msg.content
-            logger.info("Set screenname to send snaps to: " + username)
-            await msg.delete()
-            logger.debug("Deleted screenname message")
-            description = description + username + "\nEnter amount of points to generate: "
-            embed, description = setEmbed(description, booster)
-            await sent.edit(embed=embed)
-            logger.debug("Added screenname information to embed")
-
-            while True:
-                msg = await client.wait_for("message", check=check)
-                logger.debug("Received message, checking for int")
-                if msg.content != "/quit":
-                    try:
-                        await msg.delete()
-                        logger.debug("Deleted potential int message")
-                        points = int(msg.content)
-                        logpoints = str(points)
-                        logger.info("Set points to generate to: " + logpoints)
-                        break
-                    except Exception:
-                        botmsg = await ctx.send("Error getting points input. Please try again after this message is gone.")
-                        logging.exception("Error while getting points input:")
-                        sleep(3)
-                        await botmsg.delete()
-                        logging.debug("Deleted bot error message")
-                        continue
-                else: 
-                    await msg.delete()
-                    botmsg = await ctx.send("Program was stopped by user.")
-                    logger.info("Program was stopped by user")
-                    sleep(3)
-                    await botmsg.delete()
-                    logger.debug("Bot message deleted")
-                    return
-        
-
-            strpoints = str(points)
-            description = description + strpoints + "\nNow generating points. Please wait."
-            embed, description = setEmbed(description, booster)
-            await sent.edit(embed=embed)
-            logger.debug("Added points information to embed")
-
-            #sending variables to thread
-            myThread = threading.Thread(target=script.mainScript, args=(username, points), name="sending_snaps")
-            myThread.start()
-            logger.debug("Started thread for sending snaps")
-        else:
-            await msg.delete()
-            botmsg = await ctx.send("Program was stopped by user.")
-            logger.info("Program was stopped by user")
-            sleep(3)
-            await botmsg.delete()
-            logger.debug("Bot message deleted")
-    else:
-        botmsg = await ctx.send("Program is currently running. Please try again later")
-        logger.info("Snap thread is running. Prompted user to try again later")
-        sleep(3)
-        await botmsg.delete()
-        logger.debug("Bot message deleted")"""
-
-client.run(token)
+if __name__ == "__main__":
+    token = _load_token()
+    client.run(token)

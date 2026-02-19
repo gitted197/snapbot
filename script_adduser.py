@@ -1,62 +1,49 @@
 import sys
-from utils import adbConnection, checkInt, startSnap
-from utils.clicking import ClickButton
 from time import sleep
-from utils.clicking import ClickButton
 import logging
-from utils.setup_logging import setLog
-from utils.snapcode import get_snapcode
 
+from utils import adbConnection, startSnap
+from utils.clicking import ClickButton
+from utils.setup_logging import setup_logging
+
+setup_logging()
 logger = logging.getLogger(__name__)
-logger = setLog(logger)
 
-def mainScriptAddSnap(sys1):
-    #Username to variable
+def mainScriptAddSnap(username_input: str) -> int:
+    logger.debug("Function mainScriptAddSnap received username=%s", username_input)
+
+    device = adbConnection()
+    logger.debug("Connected to adb device")
+
+    startSnap(device)
+    logger.info("Opened snap, generating and clicking URL to add friend")
+
     try:
-        username_input = sys1
-        print(username_input)
-        logger.debug("Function mainScriptAddScript received: " + username_input)
-    except Exception:
-        logger.exception("Error while setting username in mainScriptAddSnap:")
-
-
-    #Connecting to phone
-    try:
-        device = adbConnection()
-        logger.debug("Set adbConnection")
-    except Exception:
-        logger.exception("Error while setting up adbConnection: ")
-
-    #Unlocking phone, starting Snap
-    try:
-        startSnap(device)
-        logger.info("Opened snap, generating and clicking URL to add friend")
-    except Exception:
-        logger.exception("Error while starting Snapchat: ")
-
-    try:    
-        device.shell(f"am start -a \"android.intent.action.VIEW\" -d \"https://snapchat.com/add/{username_input}\"")
-        logger.info("Started add friend intent with URL"
+        device.shell(
+            f'am start -a "android.intent.action.VIEW" -d "https://snapchat.com/add/{username_input}"'
         )
-        phase = "clicking_confirm_add"
-        click = ClickButton(phase, device)
-        click.ClickNow("com.snapchat.android:id/scan_add_friend_card_button_add_friend", None)
+        logger.info("Started add friend intent with URL")
+
+        ClickButton("clicking_confirm_add", device).ClickNow(
+            "com.snapchat.android:id/scan_add_friend_card_button_add_friend", None
+        )
         logger.debug("Clicked confirm add friend")
         sleep(1)
 
-        device.shell("su -c \"am force-stop com.snapchat.android\"")
+        device.shell('su -c "am force-stop com.snapchat.android"')
         logger.debug("Force closed snap after adding friend")
-
     except Exception:
-        logger.exception("Error while adding user to Snapchat: ")
-    logger.info("Done adding " + username_input + " to Snapchat account!")
-    exit
+        logger.exception("Error while adding user to Snapchat")
+        return 1
+
+    logger.info("Done adding %s to Snapchat account!", username_input)
+    return 0
+
+def main(argv) -> int:
+    if len(argv) != 2:
+        print("Usage: python script_adduser.py <username>")
+        return 2
+    return mainScriptAddSnap(argv[1])
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Not enough arguments on command line")
-        exit
-    elif len(sys.argv) > 2:
-        print("Too many arguments on command line")    
-    else:
-        mainScriptAddSnap(sys.argv[1])
+    raise SystemExit(main(sys.argv))
