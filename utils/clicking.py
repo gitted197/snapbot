@@ -5,6 +5,7 @@ from time import sleep
 from utils import getDump, rebootSnap
 import logging
 from utils.setup_logging import setLog
+from utils import XML_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,14 @@ def randomCoordinatesFromBounds(bounds):
         randomBetween(int(matches[2]), int(matches[4])),
     ]
 
-class CurrentDump:
+#class CurrentDump:
     # Initialize current XML tree
-    def __init__(self, xmlpath):
-        self.tree = ET.parse(xmlpath)
+    #def __init__(self, xmlpath):
+        #elf.tree = ET.parse(xmlpath)
+
+class CurrentDump:
+    def __init__(self):
+        self.tree = None
 
     def getNode(self, resourceId, username_input):
             if username_input != None:
@@ -96,14 +101,26 @@ class CurrentDump:
                     logger.error("Tried to find the button 5 times. Script is stopping now.")
                     raise RuntimeError("Tried too many times")
 
+#class ClickButton:
+#    def __init__(self, phase, device):
+#        self.phase = phase
+#        self.xmlpath = 'xml/' + phase + '.xml'
+#        self.device = device
+
 class ClickButton:
     def __init__(self, phase, device):
         self.phase = phase
-        self.xmlpath = 'xml/' + phase + '.xml'
         self.device = device
+        self.xmlpath = str(XML_DIR / f"{phase}.xml")
+
+#    def ClickNow(self, node, username):
+#       self.node = node
+#        self.username = username
+#        current = CurrentDump(self.xmlpath)
+#        current.clickButtonRandomized(self.device, self.node, self.username, self.phase, self.xmlpath)
 
     def ClickNow(self, node, username):
         self.node = node
         self.username = username
-        current = CurrentDump(self.xmlpath)
+        current = CurrentDump()
         current.clickButtonRandomized(self.device, self.node, self.username, self.phase, self.xmlpath)

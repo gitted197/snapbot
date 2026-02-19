@@ -97,7 +97,7 @@ def mainScript(sys1, sys2):
                 logger.debug("Too many clicking errors. Now rebooting snap.")
                 pass
     except Exception as e:
-        logger.exception("Error while in sending snaps loop: " + e)
+        logger.exception("Error while in sending snaps loop: %s", e)
     logger.info("Done sending " + str(points_input) + " snaps!")
     exit
 

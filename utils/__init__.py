@@ -2,9 +2,16 @@ from ppadb.client import Client as AdbClient # type: ignore
 from time import sleep
 import logging
 from utils.setup_logging import setLog
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../snapbot
+XML_DIR = PROJECT_ROOT / "xml"
+XML_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 logger = setLog(logger)
+
+
 
 def adbConnection():
     try:
@@ -60,12 +67,25 @@ def rebootSnap(device):
         except Exception:
             logger.exception("Error while starting snap: ")  
 
+#def getDump(device, phase):
+#    try:
+#        dumpstring = "uiautomator dump /sdcard/{0}.xml".format(phase)
+#        device.shell(dumpstring)
+#        pullstring1, pullstring2 = "/sdcard/{0}.xml".format(phase), "xml/{0}.xml".format(phase)
+#        device.pull(pullstring1, pullstring2)
+#        logger.debug("Got xml dump from phone")
+#    except Exception:
+#        logger.exception("Error while getting dump from phone: ")
+
 def getDump(device, phase):
     try:
-        dumpstring = "uiautomator dump /sdcard/{0}.xml".format(phase)
+        dumpstring = f"uiautomator dump /sdcard/{phase}.xml"
         device.shell(dumpstring)
-        pullstring1, pullstring2 = "/sdcard/{0}.xml".format(phase), "xml/{0}.xml".format(phase)
-        device.pull(pullstring1, pullstring2)
+
+        pull_src = f"/sdcard/{phase}.xml"
+        pull_dst = str(XML_DIR / f"{phase}.xml")
+        device.pull(pull_src, pull_dst)
+
         logger.debug("Got xml dump from phone")
     except Exception:
         logger.exception("Error while getting dump from phone: ")
