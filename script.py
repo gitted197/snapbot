@@ -57,6 +57,13 @@ def mainScript(username_input: str, points_input_raw) -> int:
             ClickButton("back_to_camera", device).ClickNow("com.snapchat.android:id/ngs_camera_icon_container", None)
 
             pointscounter += 1
+            
+            # Keep a counter after each successful send
+            logger.debug("Sent %s picture(s)", pointscounter)
+
+            # Every 5 snaps, log progress at INFO level
+            if pointscounter % 5 == 0:
+                logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
             logger.debug("Sent %s picture(s)", pointscounter)
 
     except RuntimeError:
