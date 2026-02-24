@@ -62,7 +62,7 @@ def mainScript(username_input: str, points_input_raw) -> int:
             logger.debug("Sent %s picture(s)", pointscounter)
 
             # Every 5 snaps, log progress at INFO level
-            if pointscounter % 5 == 0:
+            if pointscounter % 1 == 0:
                 logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
             logger.debug("Sent %s picture(s)", pointscounter)
 
