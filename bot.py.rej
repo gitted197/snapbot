@@ -1,0 +1,18 @@
+@@ -107,7 +107,7 @@
+ 
+             # Run blocking script in a worker thread
+             try:
+-                generated = await asyncio.to_thread(script.mainScript, username, points)
++                generated, elapsed_time = await asyncio.to_thread(script.mainScript, username, points)
+                 state.points_counter = generated
+             except Exception as e:
+                 logger.exception("snap failed")
+@@ -115,7 +115,7 @@
+                 await sent.edit(content=f"Fout: {e}")
+                 return
+ 
+-            description = description + f"\nDone. Generated {state.points_counter} points."
++            description = description + f"\nDone. Generated {state.points_counter} points in {elapsed_time}."
+             embed, description = setEmbed(description, booster)
+             await sent.edit(embed=embed)
+             await asyncio.sleep(5)

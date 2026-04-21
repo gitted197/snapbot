@@ -1,6 +1,6 @@
 import sys
 import subprocess
-from time import sleep, perf_counter
+from time import sleep
 import logging
 
 from utils import adbConnection, startSnap, rebootSnap
@@ -11,7 +11,6 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
-NEXT_BUTTON_ID = "com.snapchat.android:id/send_btn"
 
 
 def formatDuration(seconds: float) -> str:
@@ -26,32 +25,16 @@ def formatDuration(seconds: float) -> str:
     return f"{seconds}s"
 
 
-def clickCameraOrContinue(device) -> bool:
-    """
-    Click the camera button, unless the snap was already taken.
-
-    Returns True when this function already clicked the next/send button.
-    Returns False when the caller still needs to click next/send.
-    """
+def clickCameraWithRecovery(device) -> None:
     try:
         ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
-        return False
+        return
     except RuntimeError:
         logger.warning(
-            "Camera button not found after click retries; checking if preview is already open."
-        )
-
-    try:
-        ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
-        logger.info("Preview screen detected; clicked next without retrying camera.")
-        return True
-    except RuntimeError:
-        logger.warning(
-            "Camera button and next button not found; rebooting Snapchat and trying camera once more."
+            "Camera button not found after click retries; rebooting Snapchat and trying once more."
         )
         rebootSnap(device)
         ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
-        return False
 
 
 def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
@@ -87,12 +70,10 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
                 logger.info("Rebooted Snap. Counter: %s", pointscounter)
 
             # clicking steps
-            next_already_clicked = clickCameraOrContinue(device)
+            clickCameraWithRecovery(device)
+            sleep(1)
 
-            if not next_already_clicked:
-                sleep(1)
-                ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
-
+            ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
             sleep(0.25)
 
             ClickButton("clicking_user", device).ClickNow("com.snapchat.android:id/send_to_user", username_input)
