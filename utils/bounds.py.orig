@@ -13,10 +13,9 @@ logger = logging.getLogger(__name__)
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 def randomBetween(n1, n2):
-    # Deterministic: always click the center of the range instead of a random point.
     highest = max(n1, n2)
     lowest = min(n1, n2)
-    return (lowest + highest) // 2
+    return randint(lowest, highest)
 
 def randomCoordinatesFromBounds(bounds: str):
     m = _BOUNDS_RE.search(bounds.strip())
