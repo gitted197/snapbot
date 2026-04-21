@@ -12,6 +12,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
 
 def randomBetween(n1, n2):
     highest = max(n1, n2)
@@ -19,12 +20,33 @@ def randomBetween(n1, n2):
     logger.debug("Returned bounds %s, %s", highest, lowest)
     return randint(lowest, highest)
 
-def randomCoordinatesFromBounds(bounds: str):
+def _parseBounds(bounds: str):
     m = _BOUNDS_RE.search(bounds.strip())
     if not m:
         raise ValueError(f"Invalid bounds string: {bounds!r}")
-    x1, y1, x2, y2 = map(int, m.groups())
+    return tuple(map(int, m.groups()))
+
+def randomCoordinatesFromBounds(bounds: str):
+    x1, y1, x2, y2 = _parseBounds(bounds)
     return [randomBetween(x1, x2), randomBetween(y1, y2)]
+
+def randomCoordinatesFromBoundsInset(bounds: str, inset_ratio: float = 0.30):
+    if not 0 <= inset_ratio < 0.5:
+        raise ValueError("inset_ratio must be >= 0 and < 0.5")
+
+    x1, y1, x2, y2 = _parseBounds(bounds)
+    width = x2 - x1
+    height = y2 - y1
+
+    inset_x = int(width * inset_ratio)
+    inset_y = int(height * inset_ratio)
+
+    safe_x1 = x1 + inset_x
+    safe_x2 = x2 - inset_x
+    safe_y1 = y1 + inset_y
+    safe_y2 = y2 - inset_y
+
+    return [randomBetween(safe_x1, safe_x2), randomBetween(safe_y1, safe_y2)]
 
 class CurrentDump:
     def __init__(self):
@@ -59,7 +81,10 @@ class CurrentDump:
                 if "bounds" not in node.attrib:
                     raise RuntimeError("Bounds not found")
 
-                x, y = randomCoordinatesFromBounds(node.attrib["bounds"])
+                if resourceId == CAMERA_CAPTURE_BUTTON_ID:
+                    x, y = randomCoordinatesFromBoundsInset(node.attrib["bounds"], inset_ratio=0.30)
+                else:
+                    x, y = randomCoordinatesFromBounds(node.attrib["bounds"])
                 logger.info("Clicking on %s, %s", x, y)
                 device.shell(f"input touchscreen tap {x} {y}")
                 return
