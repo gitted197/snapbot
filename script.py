@@ -1,6 +1,6 @@
 import sys
 import subprocess
-from time import sleep
+from time import sleep, perf_counter
 import logging
 
 from utils import adbConnection, startSnap, rebootSnap
@@ -10,7 +10,34 @@ from utils.setup_logging import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-def mainScript(username_input: str, points_input_raw) -> int:
+CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
+
+
+def formatDuration(seconds: float) -> str:
+    seconds_int = int(round(seconds))
+    minutes, seconds = divmod(seconds_int, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def clickCameraWithRecovery(device) -> None:
+    try:
+        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
+        return
+    except RuntimeError:
+        logger.warning(
+            "Camera button not found after click retries; rebooting Snapchat and trying once more."
+        )
+        rebootSnap(device)
+        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
+
+
+def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     logger.debug("Function mainScript received username=%s", username_input)
 
     try:
@@ -34,6 +61,7 @@ def mainScript(username_input: str, points_input_raw) -> int:
     logger.info("Opened snap, start sending pictures")
 
     pointscounter = 0
+    send_started = perf_counter()
 
     try:
         while pointscounter < points_input:
@@ -42,7 +70,7 @@ def mainScript(username_input: str, points_input_raw) -> int:
                 logger.info("Rebooted Snap. Counter: %s", pointscounter)
 
             # clicking steps
-            ClickButton("clicking_camera", device).ClickNow("com.snapchat.android:id/camera_capture_button", None)
+            clickCameraWithRecovery(device)
             sleep(1)
 
             ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
@@ -73,8 +101,14 @@ def mainScript(username_input: str, points_input_raw) -> int:
         logger.exception("Error while in sending snaps loop")
         raise
 
-    logger.info("Done sending %s snaps!", points_input)
-    return pointscounter
+    elapsed_seconds = perf_counter() - send_started
+    logger.info(
+        "Done sending %s/%s snaps in %s!",
+        pointscounter,
+        points_input,
+        formatDuration(elapsed_seconds),
+    )
+    return pointscounter, elapsed_seconds
 
 def main(argv) -> int:
     if len(argv) != 3:
