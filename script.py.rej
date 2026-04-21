@@ -1,86 +1,266 @@
-@@ -10,6 +10,49 @@
+@@ -1,16 +1,197 @@
+ import sys
+ import subprocess
+-from time import sleep
++import xml.etree.ElementTree as ET
++from time import sleep, perf_counter
+ import logging
+ 
+-from utils import adbConnection, startSnap, rebootSnap
++from utils import XML_DIR, adbConnection, getDump, startSnap, rebootSnap
+ from utils.clicking import ClickButton
+ from utils.setup_logging import setup_logging
+ 
  setup_logging()
  logger = logging.getLogger(__name__)
  
-+def format_duration(seconds: float) -> str:
-+    total_seconds = int(round(seconds))
-+    minutes, secs = divmod(total_seconds, 60)
+-def mainScript(username_input: str, points_input_raw) -> int:
++CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
++NEXT_BUTTON_ID = "com.snapchat.android:id/send_btn"
++USER_BUTTON_ID = "com.snapchat.android:id/send_to_user"
++SEND_BUTTON_ID = "com.snapchat.android:id/send_to_send_button"
++BACK_TO_CAMERA_BUTTON_ID = "com.snapchat.android:id/ngs_camera_icon_container"
++SCREEN_DETECT_PHASE = "screen_detect"
++MAX_TRANSITIONS_PER_SNAP = 12
++
++FLOW_NEXT_STEP = {
++    "camera": "next",
++    "next": "user",
++    "user": "send",
++    "send": "back",
++    "back": "done",
++}
++
++FLOW_RECOVERY_PRIORITY = {
++    # If camera is missing, the photo may already be taken.
++    "camera": ("next", "user", "send", "back", "camera"),
++    # If next is missing, the app may already have advanced to the recipient list.
++    "next": ("user", "send", "back", "camera", "next"),
++    # If selecting the user fails, prefer send/back when visible because the user
++    # may already be selected. Clicking the user again could toggle selection off.
++    "user": ("send", "back", "camera", "user", "next"),
++    "send": ("send", "back", "camera", "user", "next"),
++    "back": ("back", "camera", "send", "user", "next"),
++}
++
++
++class FlowRecovery:
++    def __init__(self) -> None:
++        self.reboot_used = False
++
++    def reset_after_success(self) -> None:
++        self.reboot_used = False
++
++    def reboot_once_and_restart(self, device, reason: str) -> str:
++        if self.reboot_used:
++            raise RuntimeError(
++                f"Could not recover Snapchat flow after reboot. Last reason: {reason}"
++            )
++
++        logger.warning("%s Rebooting Snapchat once and restarting this snap.", reason)
++        rebootSnap(device)
++        self.reboot_used = True
++        return "camera"
++
++
++def formatDuration(seconds: float) -> str:
++    seconds_int = int(round(seconds))
++    minutes, seconds = divmod(seconds_int, 60)
 +    hours, minutes = divmod(minutes, 60)
 +
 +    if hours:
-+        return f"{hours}h {minutes}m {secs}s"
++        return f"{hours}h {minutes}m {seconds}s"
 +    if minutes:
-+        return f"{minutes}m {secs}s"
-+    return f"{secs}s"
++        return f"{minutes}m {seconds}s"
++    return f"{seconds}s"
 +
 +
-+def click_camera_or_continue(device) -> bool:
-+    """
-+    Click the camera button, unless Snapchat is already on the preview screen.
++def _xml_has_resource_id(tree: ET.ElementTree, resource_id: str) -> bool:
++    return any(
++        node.attrib.get("resource-id") == resource_id
++        for node in tree.iter("node")
++    )
 +
-+    Returns True when the next/send button was already clicked here, so the
-+    caller must not click it again. Returns False when the normal camera click
-+    succeeded and the caller should continue with the next/send button.
-+    """
++
++def _xml_has_text(tree: ET.ElementTree, text: str) -> bool:
++    return any(node.attrib.get("text") == text for node in tree.iter("node"))
++
++
++def detectVisibleFlowScreens(device, username_input: str) -> set[str]:
++    """Return the known Snapchat flow buttons/screens that are currently visible."""
 +    try:
-+        ClickButton("clicking_camera", device).ClickNow(
-+            "com.snapchat.android:id/camera_capture_button", None
-+        )
-+        return False
-+    except RuntimeError:
-+        logger.warning("Camera button not found. Checking if snap was already taken...")
++        getDump(device, SCREEN_DETECT_PHASE)
++        tree = ET.parse(str(XML_DIR / f"{SCREEN_DETECT_PHASE}.xml"))
++    except Exception:
++        logger.exception("Could not detect current Snapchat screen")
++        return set()
 +
-+    try:
-+        ClickButton("clicking_next", device).ClickNow(
-+            "com.snapchat.android:id/send_btn", None
-+        )
-+        logger.info("Already on preview screen; clicked next instead of camera.")
-+        return True
-+    except RuntimeError:
-+        logger.warning("Camera and next button not found. Rebooting Snapchat and retrying camera.")
-+        rebootSnap(device)
++    visible: set[str] = set()
++    if _xml_has_resource_id(tree, CAMERA_CAPTURE_BUTTON_ID):
++        visible.add("camera")
++    if _xml_has_resource_id(tree, NEXT_BUTTON_ID):
++        visible.add("next")
++    if _xml_has_text(tree, username_input):
++        visible.add("user")
++    if _xml_has_resource_id(tree, SEND_BUTTON_ID):
++        visible.add("send")
++    if _xml_has_resource_id(tree, BACK_TO_CAMERA_BUTTON_ID):
++        visible.add("back")
++    return visible
 +
-+        ClickButton("clicking_camera", device).ClickNow(
-+            "com.snapchat.android:id/camera_capture_button", None
-+        )
-+        return False
 +
- def mainScript(username_input: str, points_input_raw) -> int:
++def chooseRecoveryStep(expected_step: str, visible: set[str]) -> str | None:
++    # If send/back was expected but the camera is already visible, the previous
++    # tap probably succeeded and the snap is complete.
++    if expected_step in {"send", "back"} and "camera" in visible and "send" not in visible:
++        return "done"
++
++    for step in FLOW_RECOVERY_PRIORITY[expected_step]:
++        if step in visible:
++            return step
++    return None
++
++
++def clickFlowStep(device, step: str, username_input: str) -> str:
++    if step == "camera":
++        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
++        sleep(1)
++    elif step == "next":
++        ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
++        sleep(0.25)
++    elif step == "user":
++        ClickButton("clicking_user", device).ClickNow(USER_BUTTON_ID, username_input)
++        sleep(0.25)
++    elif step == "send":
++        ClickButton("clicking_send", device).ClickNow(SEND_BUTTON_ID, None)
++        sleep(0.25)
++    elif step == "back":
++        ClickButton("back_to_camera", device).ClickNow(BACK_TO_CAMERA_BUTTON_ID, None)
++    else:
++        raise RuntimeError(f"Unknown flow step: {step}")
++
++    return FLOW_NEXT_STEP[step]
++
++
++def recoverFlowStep(device, expected_step: str, username_input: str, recovery: FlowRecovery) -> str:
++    visible = detectVisibleFlowScreens(device, username_input)
++    logger.warning(
++        "Expected step %s failed. Visible flow buttons/screens: %s",
++        expected_step,
++        ", ".join(sorted(visible)) if visible else "none",
++    )
++
++    recovery_step = chooseRecoveryStep(expected_step, visible)
++    if recovery_step is None:
++        return recovery.reboot_once_and_restart(
++            device,
++            f"No known Snapchat flow button found after {expected_step!r} failed.",
++        )
++
++    if recovery_step == expected_step:
++        return recovery.reboot_once_and_restart(
++            device,
++            f"Detected {expected_step!r}, but clicking it still failed.",
++        )
++
++    logger.info(
++        "Recovering Snapchat flow: expected %s, detected %s. Continuing from there.",
++        expected_step,
++        recovery_step,
++    )
++    return recovery_step
++
++
++def sendOneSnap(device, username_input: str, recovery: FlowRecovery) -> None:
++    step = "camera"
++    transitions = 0
++
++    while step != "done":
++        transitions += 1
++        if transitions > MAX_TRANSITIONS_PER_SNAP:
++            step = recovery.reboot_once_and_restart(
++                device,
++                "Too many Snapchat flow transitions while sending one snap.",
++            )
++            transitions = 0
++            continue
++
++        try:
++            step = clickFlowStep(device, step, username_input)
++        except RuntimeError:
++            step = recoverFlowStep(device, step, username_input, recovery)
++
++    # This is the reset the user asked for: after a reboot fixed the flow and a
++    # snap finishes successfully, a later problem is allowed to reboot again.
++    recovery.reset_after_success()
++
++
++def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
      logger.debug("Function mainScript received username=%s", username_input)
  
-@@ -34,6 +77,7 @@
+     try:
+@@ -34,47 +215,44 @@
      logger.info("Opened snap, start sending pictures")
  
      pointscounter = 0
-+    start_time = perf_counter()
++    send_started = perf_counter()
++    recovery = FlowRecovery()
  
      try:
          while pointscounter < points_input:
-@@ -42,10 +86,12 @@
+             if pointscounter % 10 == 0 and pointscounter != 0:
+                 rebootSnap(device)
++                recovery.reset_after_success()
                  logger.info("Rebooted Snap. Counter: %s", pointscounter)
  
-             # clicking steps
+-            # clicking steps
 -            ClickButton("clicking_camera", device).ClickNow("com.snapchat.android:id/camera_capture_button", None)
 -            sleep(1)
-+            next_already_clicked = click_camera_or_continue(device)
-+
-+            if not next_already_clicked:
-+                sleep(1)
-+                ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
- 
+-
 -            ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
-             sleep(0.25)
+-            sleep(0.25)
+-
+-            ClickButton("clicking_user", device).ClickNow("com.snapchat.android:id/send_to_user", username_input)
+-            sleep(0.25)
+-
+-            ClickButton("clicking_send", device).ClickNow("com.snapchat.android:id/send_to_send_button", None)
+-            sleep(0.25)
+-
+-            ClickButton("back_to_camera", device).ClickNow("com.snapchat.android:id/ngs_camera_icon_container", None)
++            sendOneSnap(device, username_input, recovery)
  
-             ClickButton("clicking_user", device).ClickNow("com.snapchat.android:id/send_to_user", username_input)
-@@ -73,8 +119,9 @@
+             pointscounter += 1
+-            
++
+             # Keep a counter after each successful send
+             logger.debug("Sent %s picture(s)", pointscounter)
+ 
+-            # Every 5 snaps, log progress at INFO level
++            # Every snap, log progress at INFO level
+             if pointscounter % 1 == 0:
+                 logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
+             logger.debug("Sent %s picture(s)", pointscounter)
+ 
+     except RuntimeError:
+-        rebootSnap(device)
+-        logger.debug("Too many clicking errors. Now rebooting snap.")
++        logger.exception("Unrecoverable Snapchat flow error")
++        raise
+     except Exception:
          logger.exception("Error while in sending snaps loop")
          raise
  
 -    logger.info("Done sending %s snaps!", points_input)
 -    return pointscounter
-+    elapsed_time = format_duration(perf_counter() - start_time)
-+    logger.info("Done sending %s snaps in %s!", pointscounter, elapsed_time)
-+    return pointscounter, elapsed_time
++    elapsed_seconds = perf_counter() - send_started
++    logger.info(
++        "Done sending %s/%s snaps in %s!",
++        pointscounter,
++        points_input,
++        formatDuration(elapsed_seconds),
++    )
++    return pointscounter, elapsed_seconds
++
  
  def main(argv) -> int:
      if len(argv) != 3:

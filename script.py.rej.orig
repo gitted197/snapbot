@@ -1,86 +1,86 @@
-@@ -10,49 +10,6 @@
+@@ -10,6 +10,49 @@
  setup_logging()
  logger = logging.getLogger(__name__)
  
--def format_duration(seconds: float) -> str:
--    total_seconds = int(round(seconds))
--    minutes, secs = divmod(total_seconds, 60)
--    hours, minutes = divmod(minutes, 60)
--
--    if hours:
--        return f"{hours}h {minutes}m {secs}s"
--    if minutes:
--        return f"{minutes}m {secs}s"
--    return f"{secs}s"
--
--
--def click_camera_or_continue(device) -> bool:
--    """
--    Click the camera button, unless Snapchat is already on the preview screen.
--
--    Returns True when the next/send button was already clicked here, so the
--    caller must not click it again. Returns False when the normal camera click
--    succeeded and the caller should continue with the next/send button.
--    """
--    try:
--        ClickButton("clicking_camera", device).ClickNow(
--            "com.snapchat.android:id/camera_capture_button", None
--        )
--        return False
--    except RuntimeError:
--        logger.warning("Camera button not found. Checking if snap was already taken...")
--
--    try:
--        ClickButton("clicking_next", device).ClickNow(
--            "com.snapchat.android:id/send_btn", None
--        )
--        logger.info("Already on preview screen; clicked next instead of camera.")
--        return True
--    except RuntimeError:
--        logger.warning("Camera and next button not found. Rebooting Snapchat and retrying camera.")
--        rebootSnap(device)
--
--        ClickButton("clicking_camera", device).ClickNow(
--            "com.snapchat.android:id/camera_capture_button", None
--        )
--        return False
--
++def format_duration(seconds: float) -> str:
++    total_seconds = int(round(seconds))
++    minutes, secs = divmod(total_seconds, 60)
++    hours, minutes = divmod(minutes, 60)
++
++    if hours:
++        return f"{hours}h {minutes}m {secs}s"
++    if minutes:
++        return f"{minutes}m {secs}s"
++    return f"{secs}s"
++
++
++def click_camera_or_continue(device) -> bool:
++    """
++    Click the camera button, unless Snapchat is already on the preview screen.
++
++    Returns True when the next/send button was already clicked here, so the
++    caller must not click it again. Returns False when the normal camera click
++    succeeded and the caller should continue with the next/send button.
++    """
++    try:
++        ClickButton("clicking_camera", device).ClickNow(
++            "com.snapchat.android:id/camera_capture_button", None
++        )
++        return False
++    except RuntimeError:
++        logger.warning("Camera button not found. Checking if snap was already taken...")
++
++    try:
++        ClickButton("clicking_next", device).ClickNow(
++            "com.snapchat.android:id/send_btn", None
++        )
++        logger.info("Already on preview screen; clicked next instead of camera.")
++        return True
++    except RuntimeError:
++        logger.warning("Camera and next button not found. Rebooting Snapchat and retrying camera.")
++        rebootSnap(device)
++
++        ClickButton("clicking_camera", device).ClickNow(
++            "com.snapchat.android:id/camera_capture_button", None
++        )
++        return False
++
  def mainScript(username_input: str, points_input_raw) -> int:
      logger.debug("Function mainScript received username=%s", username_input)
  
-@@ -77,7 +34,6 @@
+@@ -34,6 +77,7 @@
      logger.info("Opened snap, start sending pictures")
  
      pointscounter = 0
--    start_time = perf_counter()
++    start_time = perf_counter()
  
      try:
          while pointscounter < points_input:
-@@ -86,12 +42,10 @@
+@@ -42,10 +86,12 @@
                  logger.info("Rebooted Snap. Counter: %s", pointscounter)
  
              # clicking steps
--            next_already_clicked = click_camera_or_continue(device)
--
--            if not next_already_clicked:
--                sleep(1)
--                ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
-+            ClickButton("clicking_camera", device).ClickNow("com.snapchat.android:id/camera_capture_button", None)
-+            sleep(1)
+-            ClickButton("clicking_camera", device).ClickNow("com.snapchat.android:id/camera_capture_button", None)
+-            sleep(1)
++            next_already_clicked = click_camera_or_continue(device)
++
++            if not next_already_clicked:
++                sleep(1)
++                ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
  
-+            ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
+-            ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
              sleep(0.25)
  
              ClickButton("clicking_user", device).ClickNow("com.snapchat.android:id/send_to_user", username_input)
-@@ -119,9 +73,8 @@
+@@ -73,8 +119,9 @@
          logger.exception("Error while in sending snaps loop")
          raise
  
--    elapsed_time = format_duration(perf_counter() - start_time)
--    logger.info("Done sending %s snaps in %s!", pointscounter, elapsed_time)
--    return pointscounter, elapsed_time
-+    logger.info("Done sending %s snaps!", points_input)
-+    return pointscounter
+-    logger.info("Done sending %s snaps!", points_input)
+-    return pointscounter
++    elapsed_time = format_duration(perf_counter() - start_time)
++    logger.info("Done sending %s snaps in %s!", pointscounter, elapsed_time)
++    return pointscounter, elapsed_time
  
  def main(argv) -> int:
      if len(argv) != 3:
