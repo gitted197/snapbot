@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
+CLICK_MAX_RETRIES = 25
+CLICK_RETRY_SLEEP_SECONDS = 0.20
 
 def randomBetween(n1, n2):
     highest = max(n1, n2)
@@ -65,7 +67,7 @@ class CurrentDump:
 
     def clickButtonRandomized(self, device, resourceId, username_input, phase, xmlpath):
         retryCounter = 0
-        while retryCounter < 5:
+        while retryCounter < CLICK_MAX_RETRIES:
             try:
                 getDump(device, phase)
             except Exception:
@@ -90,10 +92,15 @@ class CurrentDump:
                 return
             except Exception as e:
                 retryCounter += 1
-                logger.warning("Error while clicking (%s/5): %s", retryCounter, e)
-                sleep(3)
+                logger.warning(
+                    "Error while clicking (%s/%s): %s",
+                    retryCounter,
+                    CLICK_MAX_RETRIES,
+                    e,
+                )
+                sleep(CLICK_RETRY_SLEEP_SECONDS)
 
-        raise RuntimeError("Tried too many times")
+        raise RuntimeError(f"Tried too many times ({CLICK_MAX_RETRIES})")
 
 class ClickButton:
     def __init__(self, phase, device):
