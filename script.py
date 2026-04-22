@@ -1,9 +1,6 @@
 import sys
 import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
-import json
-from pathlib import Path
 from time import sleep, perf_counter
 import logging
 
@@ -29,15 +26,6 @@ STEP_DONE = "done"
 SCREEN_DUMP_PHASE = "flow_recovery"
 MAX_FLOW_ACTIONS = 20
 
-# Dynamic screen-wait tuning. The bot measures how long each screen transition
-# takes, stores the maximum observed load time, and waits that maximum plus a
-# small margin before it attempts the next click.
-WAIT_PROFILE_PATH = XML_DIR / "screen_wait_profile.json"
-WAIT_POLL_INTERVAL_SECONDS = 0.15
-WAIT_MAX_TIMEOUT_SECONDS = 12.0
-WAIT_MARGIN_SECONDS = 0.20
-WAIT_MARGIN_RATIO = 0.15
-
 STEP_PHASE = {
     STEP_CAMERA: "clicking_camera",
     STEP_NEXT: "clicking_next",
@@ -61,100 +49,6 @@ NEXT_STEP = {
     STEP_SEND: STEP_BACK,
     STEP_BACK: STEP_DONE,
 }
-
-# Which screen should be visible after each click. STEP_BACK is the last click in
-# a snap cycle, so the expected screen is the camera again.
-EXPECTED_VISIBLE_STEP_AFTER_CLICK = {
-    STEP_CAMERA: STEP_NEXT,
-    STEP_NEXT: STEP_USER,
-    STEP_USER: STEP_SEND,
-    STEP_SEND: STEP_BACK,
-    STEP_BACK: STEP_CAMERA,
-}
-
-
-@dataclass
-class ScreenWaitProfile:
-    path: Path = WAIT_PROFILE_PATH
-    margin_seconds: float = WAIT_MARGIN_SECONDS
-    margin_ratio: float = WAIT_MARGIN_RATIO
-    max_load_seconds: dict[str, float] = field(default_factory=dict)
-
-    @classmethod
-    def load(cls, path: Path = WAIT_PROFILE_PATH) -> "ScreenWaitProfile":
-        if not path.exists():
-            return cls(path=path)
-
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            logger.exception("Could not load screen wait profile; starting with empty profile")
-            return cls(path=path)
-
-        profile = cls(
-            path=path,
-            margin_seconds=float(data.get("margin_seconds", WAIT_MARGIN_SECONDS)),
-            margin_ratio=float(data.get("margin_ratio", WAIT_MARGIN_RATIO)),
-        )
-        profile.max_load_seconds = {
-            str(step): float(seconds)
-            for step, seconds in data.get("max_load_seconds", {}).items()
-        }
-        return profile
-
-    def save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "version": 1,
-                "margin_seconds": self.margin_seconds,
-                "margin_ratio": self.margin_ratio,
-                "max_load_seconds": self.max_load_seconds,
-            }
-            with self.path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
-        except Exception:
-            logger.exception("Could not save screen wait profile")
-
-    def wait_seconds_for(self, from_step: str) -> float:
-        max_load = self.max_load_seconds.get(from_step)
-        if max_load is None:
-            return 0.0
-        return max_load * (1 + self.margin_ratio) + self.margin_seconds
-
-    def record_load_time(self, from_step: str, elapsed_seconds: float) -> None:
-        if elapsed_seconds <= 0:
-            return
-
-        elapsed_seconds = round(elapsed_seconds, 3)
-        previous_max = self.max_load_seconds.get(from_step)
-        if previous_max is not None and elapsed_seconds <= previous_max:
-            return
-
-        self.max_load_seconds[from_step] = elapsed_seconds
-        self.save()
-
-        logger.info(
-            "Measured new max load time after %s: %.3fs. Configured wait: %.3fs.",
-            from_step,
-            elapsed_seconds,
-            self.wait_seconds_for(from_step),
-        )
-
-    def describe(self) -> str:
-        if not self.max_load_seconds:
-            return "no measured screen wait times yet"
-
-        parts = []
-        for step in STEP_PHASE:
-            if step not in self.max_load_seconds:
-                continue
-            parts.append(
-                f"{step}: max={self.max_load_seconds[step]:.3f}s, "
-                f"wait={self.wait_seconds_for(step):.3f}s"
-            )
-        return "; ".join(parts) if parts else "no measured screen wait times yet"
 
 
 def formatDuration(seconds: float) -> str:
@@ -207,56 +101,6 @@ def detect_visible_steps(device, username_input: str) -> set[str]:
         visible.add(STEP_BACK)
 
     return visible
-
-
-def wait_for_expected_screen(
-    device,
-    username_input: str,
-    from_step: str,
-    expected_visible_step: str,
-    wait_profile: ScreenWaitProfile,
-) -> None:
-    """Wait until the next screen is visible, measuring the load duration.
-
-    If this transition has been measured before, the stored max duration plus
-    margin is used as the initial wait. If that is not enough, polling continues
-    and the longer duration becomes the new maximum.
-    """
-    started = perf_counter()
-    configured_wait = wait_profile.wait_seconds_for(from_step)
-
-    if configured_wait > 0:
-        logger.debug(
-            "Waiting %.3fs for %s -> %s based on measured max + margin",
-            configured_wait,
-            from_step,
-            expected_visible_step,
-        )
-        sleep(configured_wait)
-        visible = detect_visible_steps(device, username_input)
-        if expected_visible_step in visible:
-            return
-
-        logger.warning(
-            "Configured wait %.3fs for %s -> %s was not enough. Visible: %s",
-            configured_wait,
-            from_step,
-            expected_visible_step,
-            ", ".join(sorted(visible)) if visible else "none",
-        )
-
-    while perf_counter() - started < WAIT_MAX_TIMEOUT_SECONDS:
-        visible = detect_visible_steps(device, username_input)
-        if expected_visible_step in visible:
-            elapsed = perf_counter() - started
-            wait_profile.record_load_time(from_step, elapsed)
-            return
-        sleep(WAIT_POLL_INTERVAL_SECONDS)
-
-    raise RuntimeError(
-        f"Expected screen {expected_visible_step!r} was not visible "
-        f"after clicking {from_step!r} within {WAIT_MAX_TIMEOUT_SECONDS:.1f}s."
-    )
 
 
 def _first_visible(visible: set[str], *steps: str) -> str | None:
@@ -327,7 +171,7 @@ def recover_after_failed_step(
     return STEP_CAMERA, True
 
 
-def send_one_snap(device, username_input: str, wait_profile: ScreenWaitProfile) -> None:
+def send_one_snap(device, username_input: str) -> None:
     step = STEP_CAMERA
     reboot_used = False
 
@@ -337,14 +181,12 @@ def send_one_snap(device, username_input: str, wait_profile: ScreenWaitProfile) 
 
         try:
             click_step(device, step, username_input)
-            expected_visible_step = EXPECTED_VISIBLE_STEP_AFTER_CLICK[step]
-            wait_for_expected_screen(
-                device=device,
-                username_input=username_input,
-                from_step=step,
-                expected_visible_step=expected_visible_step,
-                wait_profile=wait_profile,
-            )
+
+            if step == STEP_CAMERA:
+                sleep(1)
+            elif step in {STEP_NEXT, STEP_USER, STEP_SEND}:
+                sleep(0.25)
+
             step = NEXT_STEP[step]
 
         except RuntimeError:
@@ -393,7 +235,7 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
                 rebootSnap(device)
                 logger.info("Scheduled Snapchat reboot. Counter: %s", pointscounter)
 
-            send_one_snap(device, username_input, wait_profile)
+            send_one_snap(device, username_input)
             pointscounter += 1
 
             logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
@@ -407,7 +249,6 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
         raise
 
     elapsed_seconds = perf_counter() - send_started
-    logger.info("Final screen wait profile: %s", wait_profile.describe())
     logger.info(
         "Done sending %s/%s snaps in %s!",
         pointscounter,
@@ -417,12 +258,14 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     return pointscounter, elapsed_seconds
 
 
+
 def main(argv) -> int:
     if len(argv) != 3:
         print("Usage: python script.py <username> <points>")
         return 2
     mainScript(argv[1], argv[2])
     return 0
+
 
 
 if __name__ == "__main__":
