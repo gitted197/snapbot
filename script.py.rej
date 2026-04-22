@@ -1,223 +1,392 @@
-@@ -1,16 +1,197 @@
+@@ -1,9 +1,13 @@
  import sys
  import subprocess
--from time import sleep
 +import xml.etree.ElementTree as ET
-+from time import sleep, perf_counter
++from dataclasses import dataclass, field
++import json
++from pathlib import Path
+ from time import sleep, perf_counter
  import logging
  
 -from utils import adbConnection, startSnap, rebootSnap
-+from utils import XML_DIR, adbConnection, getDump, startSnap, rebootSnap
++from utils import adbConnection, startSnap, rebootSnap, getDump, XML_DIR
  from utils.clicking import ClickButton
  from utils.setup_logging import setup_logging
  
- setup_logging()
- logger = logging.getLogger(__name__)
+@@ -12,6 +16,145 @@
  
--def mainScript(username_input: str, points_input_raw) -> int:
-+CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
-+NEXT_BUTTON_ID = "com.snapchat.android:id/send_btn"
-+USER_BUTTON_ID = "com.snapchat.android:id/send_to_user"
+ CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
+ NEXT_BUTTON_ID = "com.snapchat.android:id/send_btn"
++USER_ROW_ID = "com.snapchat.android:id/send_to_user"
 +SEND_BUTTON_ID = "com.snapchat.android:id/send_to_send_button"
 +BACK_TO_CAMERA_BUTTON_ID = "com.snapchat.android:id/ngs_camera_icon_container"
-+SCREEN_DETECT_PHASE = "screen_detect"
-+MAX_TRANSITIONS_PER_SNAP = 12
 +
-+FLOW_NEXT_STEP = {
-+    "camera": "next",
-+    "next": "user",
-+    "user": "send",
-+    "send": "back",
-+    "back": "done",
++STEP_CAMERA = "camera"
++STEP_NEXT = "next"
++STEP_USER = "user"
++STEP_SEND = "send"
++STEP_BACK = "back"
++STEP_DONE = "done"
++SCREEN_DUMP_PHASE = "flow_recovery"
++MAX_FLOW_ACTIONS = 20
++
++# Dynamic screen-wait tuning. The bot measures how long each screen transition
++# takes, stores the maximum observed load time, and waits that maximum plus a
++# small margin before it attempts the next click.
++WAIT_PROFILE_PATH = XML_DIR / "screen_wait_profile.json"
++WAIT_POLL_INTERVAL_SECONDS = 0.15
++WAIT_MAX_TIMEOUT_SECONDS = 12.0
++WAIT_MARGIN_SECONDS = 0.20
++WAIT_MARGIN_RATIO = 0.15
++
++STEP_PHASE = {
++    STEP_CAMERA: "clicking_camera",
++    STEP_NEXT: "clicking_next",
++    STEP_USER: "clicking_user",
++    STEP_SEND: "clicking_send",
++    STEP_BACK: "back_to_camera",
 +}
 +
-+FLOW_RECOVERY_PRIORITY = {
-+    # If camera is missing, the photo may already be taken.
-+    "camera": ("next", "user", "send", "back", "camera"),
-+    # If next is missing, the app may already have advanced to the recipient list.
-+    "next": ("user", "send", "back", "camera", "next"),
-+    # If selecting the user fails, prefer send/back when visible because the user
-+    # may already be selected. Clicking the user again could toggle selection off.
-+    "user": ("send", "back", "camera", "user", "next"),
-+    "send": ("send", "back", "camera", "user", "next"),
-+    "back": ("back", "camera", "send", "user", "next"),
++STEP_RESOURCE_ID = {
++    STEP_CAMERA: CAMERA_CAPTURE_BUTTON_ID,
++    STEP_NEXT: NEXT_BUTTON_ID,
++    STEP_USER: USER_ROW_ID,
++    STEP_SEND: SEND_BUTTON_ID,
++    STEP_BACK: BACK_TO_CAMERA_BUTTON_ID,
++}
++
++NEXT_STEP = {
++    STEP_CAMERA: STEP_NEXT,
++    STEP_NEXT: STEP_USER,
++    STEP_USER: STEP_SEND,
++    STEP_SEND: STEP_BACK,
++    STEP_BACK: STEP_DONE,
++}
++
++# Which screen should be visible after each click. STEP_BACK is the last click in
++# a snap cycle, so the expected screen is the camera again.
++EXPECTED_VISIBLE_STEP_AFTER_CLICK = {
++    STEP_CAMERA: STEP_NEXT,
++    STEP_NEXT: STEP_USER,
++    STEP_USER: STEP_SEND,
++    STEP_SEND: STEP_BACK,
++    STEP_BACK: STEP_CAMERA,
 +}
 +
 +
-+class FlowRecovery:
-+    def __init__(self) -> None:
-+        self.reboot_used = False
++@dataclass
++class ScreenWaitProfile:
++    path: Path = WAIT_PROFILE_PATH
++    margin_seconds: float = WAIT_MARGIN_SECONDS
++    margin_ratio: float = WAIT_MARGIN_RATIO
++    max_load_seconds: dict[str, float] = field(default_factory=dict)
 +
-+    def reset_after_success(self) -> None:
-+        self.reboot_used = False
++    @classmethod
++    def load(cls, path: Path = WAIT_PROFILE_PATH) -> "ScreenWaitProfile":
++        if not path.exists():
++            return cls(path=path)
 +
-+    def reboot_once_and_restart(self, device, reason: str) -> str:
-+        if self.reboot_used:
-+            raise RuntimeError(
-+                f"Could not recover Snapchat flow after reboot. Last reason: {reason}"
++        try:
++            with path.open("r", encoding="utf-8") as f:
++                data = json.load(f)
++        except Exception:
++            logger.exception("Could not load screen wait profile; starting with empty profile")
++            return cls(path=path)
++
++        profile = cls(
++            path=path,
++            margin_seconds=float(data.get("margin_seconds", WAIT_MARGIN_SECONDS)),
++            margin_ratio=float(data.get("margin_ratio", WAIT_MARGIN_RATIO)),
++        )
++        profile.max_load_seconds = {
++            str(step): float(seconds)
++            for step, seconds in data.get("max_load_seconds", {}).items()
++        }
++        return profile
++
++    def save(self) -> None:
++        try:
++            self.path.parent.mkdir(parents=True, exist_ok=True)
++            payload = {
++                "version": 1,
++                "margin_seconds": self.margin_seconds,
++                "margin_ratio": self.margin_ratio,
++                "max_load_seconds": self.max_load_seconds,
++            }
++            with self.path.open("w", encoding="utf-8") as f:
++                json.dump(payload, f, indent=2, sort_keys=True)
++        except Exception:
++            logger.exception("Could not save screen wait profile")
++
++    def wait_seconds_for(self, from_step: str) -> float:
++        max_load = self.max_load_seconds.get(from_step)
++        if max_load is None:
++            return 0.0
++        return max_load * (1 + self.margin_ratio) + self.margin_seconds
++
++    def record_load_time(self, from_step: str, elapsed_seconds: float) -> None:
++        if elapsed_seconds <= 0:
++            return
++
++        elapsed_seconds = round(elapsed_seconds, 3)
++        previous_max = self.max_load_seconds.get(from_step)
++        if previous_max is not None and elapsed_seconds <= previous_max:
++            return
++
++        self.max_load_seconds[from_step] = elapsed_seconds
++        self.save()
++
++        logger.info(
++            "Measured new max load time after %s: %.3fs. Configured wait: %.3fs.",
++            from_step,
++            elapsed_seconds,
++            self.wait_seconds_for(from_step),
++        )
++
++    def describe(self) -> str:
++        if not self.max_load_seconds:
++            return "no measured screen wait times yet"
++
++        parts = []
++        for step in STEP_PHASE:
++            if step not in self.max_load_seconds:
++                continue
++            parts.append(
++                f"{step}: max={self.max_load_seconds[step]:.3f}s, "
++                f"wait={self.wait_seconds_for(step):.3f}s"
 +            )
++        return "; ".join(parts) if parts else "no measured screen wait times yet"
+ 
+ 
+ def formatDuration(seconds: float) -> str:
+@@ -26,32 +169,193 @@
+     return f"{seconds}s"
+ 
+ 
+-def clickCameraOrContinue(device) -> bool:
+-    """
+-    Click the camera button, unless the snap was already taken.
++def _node_by_resource(tree: ET.ElementTree, resource_id: str):
++    return tree.find(f'.//node[@resource-id="{resource_id}"]')
+ 
+-    Returns True when this function already clicked the next/send button.
+-    Returns False when the caller still needs to click next/send.
+-    """
 +
-+        logger.warning("%s Rebooting Snapchat once and restarting this snap.", reason)
-+        rebootSnap(device)
-+        self.reboot_used = True
-+        return "camera"
-+
-+
-+def formatDuration(seconds: float) -> str:
-+    seconds_int = int(round(seconds))
-+    minutes, seconds = divmod(seconds_int, 60)
-+    hours, minutes = divmod(minutes, 60)
-+
-+    if hours:
-+        return f"{hours}h {minutes}m {seconds}s"
-+    if minutes:
-+        return f"{minutes}m {seconds}s"
-+    return f"{seconds}s"
-+
-+
-+def _xml_has_resource_id(tree: ET.ElementTree, resource_id: str) -> bool:
-+    return any(
-+        node.attrib.get("resource-id") == resource_id
-+        for node in tree.iter("node")
-+    )
++def _node_by_text(tree: ET.ElementTree, text: str):
++    return tree.find(f'.//node[@text="{text}"]')
 +
 +
-+def _xml_has_text(tree: ET.ElementTree, text: str) -> bool:
-+    return any(node.attrib.get("text") == text for node in tree.iter("node"))
-+
-+
-+def detectVisibleFlowScreens(device, username_input: str) -> set[str]:
-+    """Return the known Snapchat flow buttons/screens that are currently visible."""
-+    try:
-+        getDump(device, SCREEN_DETECT_PHASE)
-+        tree = ET.parse(str(XML_DIR / f"{SCREEN_DETECT_PHASE}.xml"))
++def _dump_current_tree(device) -> ET.ElementTree | None:
+     try:
+-        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
+-        return False
+-    except RuntimeError:
+-        logger.warning(
+-            "Camera button not found after click retries; checking if preview is already open."
++        getDump(device, SCREEN_DUMP_PHASE)
++        return ET.parse(str(XML_DIR / f"{SCREEN_DUMP_PHASE}.xml"))
 +    except Exception:
-+        logger.exception("Could not detect current Snapchat screen")
++        logger.exception("Could not dump current screen for flow recovery")
++        return None
++
++
++def detect_visible_steps(device, username_input: str) -> set[str]:
++    tree = _dump_current_tree(device)
++    if tree is None:
 +        return set()
 +
 +    visible: set[str] = set()
-+    if _xml_has_resource_id(tree, CAMERA_CAPTURE_BUTTON_ID):
-+        visible.add("camera")
-+    if _xml_has_resource_id(tree, NEXT_BUTTON_ID):
-+        visible.add("next")
-+    if _xml_has_text(tree, username_input):
-+        visible.add("user")
-+    if _xml_has_resource_id(tree, SEND_BUTTON_ID):
-+        visible.add("send")
-+    if _xml_has_resource_id(tree, BACK_TO_CAMERA_BUTTON_ID):
-+        visible.add("back")
++
++    if _node_by_resource(tree, CAMERA_CAPTURE_BUTTON_ID) is not None:
++        visible.add(STEP_CAMERA)
++    if _node_by_resource(tree, NEXT_BUTTON_ID) is not None:
++        visible.add(STEP_NEXT)
++    if username_input and _node_by_text(tree, username_input) is not None:
++        visible.add(STEP_USER)
++    elif _node_by_resource(tree, USER_ROW_ID) is not None:
++        visible.add(STEP_USER)
++    if _node_by_resource(tree, SEND_BUTTON_ID) is not None:
++        visible.add(STEP_SEND)
++    if _node_by_resource(tree, BACK_TO_CAMERA_BUTTON_ID) is not None:
++        visible.add(STEP_BACK)
++
 +    return visible
 +
 +
-+def chooseRecoveryStep(expected_step: str, visible: set[str]) -> str | None:
-+    # If send/back was expected but the camera is already visible, the previous
-+    # tap probably succeeded and the snap is complete.
-+    if expected_step in {"send", "back"} and "camera" in visible and "send" not in visible:
-+        return "done"
++def wait_for_expected_screen(
++    device,
++    username_input: str,
++    from_step: str,
++    expected_visible_step: str,
++    wait_profile: ScreenWaitProfile,
++) -> None:
++    """Wait until the next screen is visible, measuring the load duration.
 +
-+    for step in FLOW_RECOVERY_PRIORITY[expected_step]:
++    If this transition has been measured before, the stored max duration plus
++    margin is used as the initial wait. If that is not enough, polling continues
++    and the longer duration becomes the new maximum.
++    """
++    started = perf_counter()
++    configured_wait = wait_profile.wait_seconds_for(from_step)
++
++    if configured_wait > 0:
++        logger.debug(
++            "Waiting %.3fs for %s -> %s based on measured max + margin",
++            configured_wait,
++            from_step,
++            expected_visible_step,
+         )
++        sleep(configured_wait)
++        visible = detect_visible_steps(device, username_input)
++        if expected_visible_step in visible:
++            return
+ 
+-    try:
+-        ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
+-        logger.info("Preview screen detected; clicked next without retrying camera.")
+-        return True
+-    except RuntimeError:
+         logger.warning(
+-            "Camera button and next button not found; rebooting Snapchat and trying camera once more."
++            "Configured wait %.3fs for %s -> %s was not enough. Visible: %s",
++            configured_wait,
++            from_step,
++            expected_visible_step,
++            ", ".join(sorted(visible)) if visible else "none",
+         )
+-        rebootSnap(device)
+-        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
+-        return False
++
++    while perf_counter() - started < WAIT_MAX_TIMEOUT_SECONDS:
++        visible = detect_visible_steps(device, username_input)
++        if expected_visible_step in visible:
++            elapsed = perf_counter() - started
++            wait_profile.record_load_time(from_step, elapsed)
++            return
++        sleep(WAIT_POLL_INTERVAL_SECONDS)
++
++    raise RuntimeError(
++        f"Expected screen {expected_visible_step!r} was not visible "
++        f"after clicking {from_step!r} within {WAIT_MAX_TIMEOUT_SECONDS:.1f}s."
++    )
++
++
++def _first_visible(visible: set[str], *steps: str) -> str | None:
++    for step in steps:
 +        if step in visible:
 +            return step
 +    return None
 +
 +
-+def clickFlowStep(device, step: str, username_input: str) -> str:
-+    if step == "camera":
-+        ClickButton("clicking_camera", device).ClickNow(CAMERA_CAPTURE_BUTTON_ID, None)
-+        sleep(1)
-+    elif step == "next":
-+        ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
-+        sleep(0.25)
-+    elif step == "user":
-+        ClickButton("clicking_user", device).ClickNow(USER_BUTTON_ID, username_input)
-+        sleep(0.25)
-+    elif step == "send":
-+        ClickButton("clicking_send", device).ClickNow(SEND_BUTTON_ID, None)
-+        sleep(0.25)
-+    elif step == "back":
-+        ClickButton("back_to_camera", device).ClickNow(BACK_TO_CAMERA_BUTTON_ID, None)
++def choose_recovery_step(failed_step: str, visible: set[str]) -> str | None:
++    """Pick the best next action based on the current visible screen."""
++    if failed_step == STEP_CAMERA:
++        return _first_visible(visible, STEP_NEXT, STEP_USER, STEP_SEND, STEP_BACK, STEP_CAMERA)
++
++    if failed_step == STEP_NEXT:
++        return _first_visible(visible, STEP_USER, STEP_SEND, STEP_BACK, STEP_CAMERA, STEP_NEXT)
++
++    if failed_step == STEP_USER:
++        return _first_visible(visible, STEP_SEND, STEP_BACK, STEP_CAMERA, STEP_NEXT, STEP_USER)
++
++    if failed_step == STEP_SEND:
++        if STEP_CAMERA in visible:
++            return STEP_DONE
++        return _first_visible(visible, STEP_BACK, STEP_SEND, STEP_USER, STEP_NEXT, STEP_CAMERA)
++
++    if failed_step == STEP_BACK:
++        if STEP_CAMERA in visible:
++            return STEP_DONE
++        return _first_visible(visible, STEP_BACK, STEP_SEND, STEP_USER, STEP_NEXT, STEP_CAMERA)
++
++    return None
++
++
++def click_step(device, step: str, username_input: str) -> None:
++    phase = STEP_PHASE[step]
++    resource_id = STEP_RESOURCE_ID[step]
++
++    if step == STEP_USER:
++        ClickButton(phase, device).ClickNow(resource_id, username_input)
 +    else:
-+        raise RuntimeError(f"Unknown flow step: {step}")
-+
-+    return FLOW_NEXT_STEP[step]
++        ClickButton(phase, device).ClickNow(resource_id, None)
 +
 +
-+def recoverFlowStep(device, expected_step: str, username_input: str, recovery: FlowRecovery) -> str:
-+    visible = detectVisibleFlowScreens(device, username_input)
++def recover_after_failed_step(
++    device,
++    failed_step: str,
++    username_input: str,
++    reboot_used: bool,
++) -> tuple[str, bool]:
++    visible = detect_visible_steps(device, username_input)
 +    logger.warning(
-+        "Expected step %s failed. Visible flow buttons/screens: %s",
-+        expected_step,
++        "Step %s failed. Visible recovery steps: %s",
++        failed_step,
 +        ", ".join(sorted(visible)) if visible else "none",
 +    )
 +
-+    recovery_step = chooseRecoveryStep(expected_step, visible)
-+    if recovery_step is None:
-+        return recovery.reboot_once_and_restart(
-+            device,
-+            f"No known Snapchat flow button found after {expected_step!r} failed.",
++    recovery_step = choose_recovery_step(failed_step, visible)
++    if recovery_step is not None:
++        return recovery_step, reboot_used
++
++    if reboot_used:
++        raise RuntimeError(
++            f"Could not recover after {failed_step}; Snapchat was already rebooted once for this snap."
 +        )
 +
-+    if recovery_step == expected_step:
-+        return recovery.reboot_once_and_restart(
-+            device,
-+            f"Detected {expected_step!r}, but clicking it still failed.",
-+        )
-+
-+    logger.info(
-+        "Recovering Snapchat flow: expected %s, detected %s. Continuing from there.",
-+        expected_step,
-+        recovery_step,
-+    )
-+    return recovery_step
++    logger.warning("No known screen detected after %s failed; rebooting Snapchat once.", failed_step)
++    rebootSnap(device)
++    return STEP_CAMERA, True
 +
 +
-+def sendOneSnap(device, username_input: str, recovery: FlowRecovery) -> None:
-+    step = "camera"
-+    transitions = 0
++def send_one_snap(device, username_input: str, wait_profile: ScreenWaitProfile) -> None:
++    step = STEP_CAMERA
++    reboot_used = False
 +
-+    while step != "done":
-+        transitions += 1
-+        if transitions > MAX_TRANSITIONS_PER_SNAP:
-+            step = recovery.reboot_once_and_restart(
-+                device,
-+                "Too many Snapchat flow transitions while sending one snap.",
-+            )
-+            transitions = 0
-+            continue
++    for _ in range(MAX_FLOW_ACTIONS):
++        if step == STEP_DONE:
++            return
 +
 +        try:
-+            step = clickFlowStep(device, step, username_input)
++            click_step(device, step, username_input)
++            expected_visible_step = EXPECTED_VISIBLE_STEP_AFTER_CLICK[step]
++            wait_for_expected_screen(
++                device=device,
++                username_input=username_input,
++                from_step=step,
++                expected_visible_step=expected_visible_step,
++                wait_profile=wait_profile,
++            )
++            step = NEXT_STEP[step]
++
 +        except RuntimeError:
-+            step = recoverFlowStep(device, step, username_input, recovery)
++            step, reboot_used = recover_after_failed_step(
++                device=device,
++                failed_step=step,
++                username_input=username_input,
++                reboot_used=reboot_used,
++            )
 +
-+    # This is the reset the user asked for: after a reboot fixed the flow and a
-+    # snap finishes successfully, a later problem is allowed to reboot again.
-+    recovery.reset_after_success()
-+
-+
-+def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
-     logger.debug("Function mainScript received username=%s", username_input)
++    raise RuntimeError("Flow recovery exceeded maximum actions for one snap")
  
-     try:
-@@ -34,47 +215,44 @@
-     logger.info("Opened snap, start sending pictures")
  
-     pointscounter = 0
-+    send_started = perf_counter()
-+    recovery = FlowRecovery()
- 
-     try:
+ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
+@@ -233,43 +540,23 @@
          while pointscounter < points_input:
              if pointscounter % 10 == 0 and pointscounter != 0:
                  rebootSnap(device)
-+                recovery.reset_after_success()
-                 logger.info("Rebooted Snap. Counter: %s", pointscounter)
+-                logger.info("Rebooted Snap. Counter: %s", pointscounter)
++                logger.info("Scheduled Snapchat reboot. Counter: %s", pointscounter)
  
 -            # clicking steps
--            ClickButton("clicking_camera", device).ClickNow("com.snapchat.android:id/camera_capture_button", None)
--            sleep(1)
+-            next_already_clicked = clickCameraOrContinue(device)
 -
--            ClickButton("clicking_next", device).ClickNow("com.snapchat.android:id/send_btn", None)
+-            if not next_already_clicked:
+-                sleep(1)
+-                ClickButton("clicking_next", device).ClickNow(NEXT_BUTTON_ID, None)
+-
 -            sleep(0.25)
 -
 -            ClickButton("clicking_user", device).ClickNow("com.snapchat.android:id/send_to_user", username_input)
@@ -225,42 +394,36 @@
 -
 -            ClickButton("clicking_send", device).ClickNow("com.snapchat.android:id/send_to_send_button", None)
 -            sleep(0.25)
--
++            send_one_snap(device, username_input, wait_profile)
++            pointscounter += 1
+ 
 -            ClickButton("back_to_camera", device).ClickNow("com.snapchat.android:id/ngs_camera_icon_container", None)
-+            sendOneSnap(device, username_input, recovery)
++            logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
  
-             pointscounter += 1
+-            pointscounter += 1
 -            
-+
-             # Keep a counter after each successful send
-             logger.debug("Sent %s picture(s)", pointscounter)
- 
+-            # Keep a counter after each successful send
+-            logger.debug("Sent %s picture(s)", pointscounter)
+-
 -            # Every 5 snaps, log progress at INFO level
-+            # Every snap, log progress at INFO level
-             if pointscounter % 1 == 0:
-                 logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
-             logger.debug("Sent %s picture(s)", pointscounter)
- 
-     except RuntimeError:
+-            if pointscounter % 1 == 0:
+-                logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
+-            logger.debug("Sent %s picture(s)", pointscounter)
+-
+-    except RuntimeError:
 -        rebootSnap(device)
 -        logger.debug("Too many clicking errors. Now rebooting snap.")
-+        logger.exception("Unrecoverable Snapchat flow error")
-+        raise
      except Exception:
-         logger.exception("Error while in sending snaps loop")
+-        logger.exception("Error while in sending snaps loop")
++        logger.exception(
++            "Error while in sending snaps loop after %s/%s snaps",
++            pointscounter,
++            points_input,
++        )
          raise
  
--    logger.info("Done sending %s snaps!", points_input)
--    return pointscounter
-+    elapsed_seconds = perf_counter() - send_started
-+    logger.info(
-+        "Done sending %s/%s snaps in %s!",
-+        pointscounter,
-+        points_input,
-+        formatDuration(elapsed_seconds),
-+    )
-+    return pointscounter, elapsed_seconds
-+
- 
- def main(argv) -> int:
-     if len(argv) != 3:
+     elapsed_seconds = perf_counter() - send_started
++    logger.info("Final screen wait profile: %s", wait_profile.describe())
+     logger.info(
+         "Done sending %s/%s snaps in %s!",
+         pointscounter,

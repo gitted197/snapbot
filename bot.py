@@ -107,7 +107,12 @@ async def snap(ctx: commands.Context):
 
             # Run blocking script in a worker thread
             try:
-                generated = await asyncio.to_thread(script.mainScript, username, points)
+                result = await asyncio.to_thread(script.mainScript, username, points)
+                if isinstance(result, tuple):
+                    generated, elapsed_seconds = result
+                else:
+                    # Backward compatibility if script.mainScript is changed to return only a count.
+                    generated, elapsed_seconds = result, None
                 state.points_counter = generated
             except Exception as e:
                 logger.exception("snap failed")
@@ -115,7 +120,15 @@ async def snap(ctx: commands.Context):
                 await sent.edit(content=f"Fout: {e}")
                 return
 
-            description = description + f"\nDone. Generated {state.points_counter} points."
+            if elapsed_seconds is None:
+                description = description + f"\nDone. Generated {state.points_counter} points."
+            else:
+                description = (
+                    description
+                    + f"\nDone. Generated {state.points_counter} points in "
+                    + script.formatDuration(elapsed_seconds)
+                    + "."
+                )
             embed, description = setEmbed(description, booster)
             await sent.edit(embed=embed)
             await asyncio.sleep(5)
