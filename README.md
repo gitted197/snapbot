@@ -22,7 +22,7 @@ For the main send loop, `script.py` repeatedly:
 4. presses send
 5. returns to the camera view
 
-Every 10 sends, it restarts Snapchat as a recovery step.
+The scheduled restart every 10 sends has been removed. Snapchat is only rebooted once as recovery if the current screen cannot be detected.
 
 ## Features
 

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
-CLICK_MAX_RETRIES = 25
+CLICK_MAX_RETRIES = 2
 CLICK_RETRY_SLEEP_SECONDS = 0.20
 
 def randomBetween(n1, n2):

@@ -379,10 +379,6 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
 
     try:
         while pointscounter < points_input:
-            if pointscounter % 10 == 0 and pointscounter != 0:
-                rebootSnap(device)
-                logger.info("Scheduled Snapchat reboot. Counter: %s", pointscounter)
-
             send_one_snap(device, username_input, timing_profile)
             pointscounter += 1
 
