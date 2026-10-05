@@ -55,11 +55,13 @@ class CurrentDump:
         self.tree = None
 
     def getNode(self, resourceId, username_input):
-        if username_input is not None:
-            xpath = './/node[@text="{user}"]'.format(user=username_input)
-            return self.tree.find(xpath)
-        xpath = './/node[@resource-id="{id}"]'.format(id=resourceId)
-        return self.tree.find(xpath)
+        # Iterate instead of interpolating names into XPath (quotes are valid).
+        matches = [node for node in self.tree.iter("node")
+                   if node.get("resource-id") == resourceId
+                   and (username_input is None or node.get("text") == username_input)]
+        if len(matches) > 1:
+            raise RuntimeError(f"Ambiguous selector: {resourceId!r}, {username_input!r}")
+        return matches[0] if matches else None
 
     def getSnapNode(self, resourceId):
         xpath = './/node[@content-desc="{id}"]'.format(id=resourceId)
@@ -69,15 +71,10 @@ class CurrentDump:
         retryCounter = 0
         while retryCounter < CLICK_MAX_RETRIES:
             try:
+                # Never parse the old dump if acquiring the new one fails.
                 getDump(device, phase)
-            except Exception:
-                logger.exception("Error while getting XML dump:")
-
-            self.tree = ET.parse(xmlpath)
-
-            node = self.getNode(resourceId, username_input) if resourceId != "Snapcode button" else self.getSnapNode(resourceId)
-
-            try:
+                self.tree = ET.parse(xmlpath)
+                node = self.getNode(resourceId, username_input) if resourceId != "Snapcode button" else self.getSnapNode(resourceId)
                 if node is None:
                     raise RuntimeError(resourceId + " not found")
                 if "bounds" not in node.attrib:
