@@ -80,7 +80,7 @@ class CurrentDump:
                 if "bounds" not in node.attrib:
                     raise RuntimeError("Bounds not found")
 
-                if resourceId == CAMERA_CAPTURE_BUTTON_ID:
+                if resourceId in (CAMERA_CAPTURE_BUTTON_ID, "send_button"):
                     x, y = randomCoordinatesFromBoundsInset(node.attrib["bounds"], inset_ratio=0.30)
                 else:
                     x, y = randomCoordinatesFromBounds(node.attrib["bounds"])
