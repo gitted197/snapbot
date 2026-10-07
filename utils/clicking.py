@@ -1,7 +1,7 @@
 import re
 from random import randint
 import xml.etree.ElementTree as ET
-from time import sleep
+from time import sleep, perf_counter
 import logging
 
 from utils import getDump
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 CAMERA_CAPTURE_BUTTON_ID = "com.snapchat.android:id/camera_capture_button"
-CLICK_MAX_RETRIES = 2
+CLICK_TIMEOUT_SECONDS = 10.0
 CLICK_RETRY_SLEEP_SECONDS = 0.20
 
 def randomBetween(n1, n2):
@@ -67,37 +67,52 @@ class CurrentDump:
         xpath = './/node[@content-desc="{id}"]'.format(id=resourceId)
         return self.tree.find(xpath)
 
-    def clickButtonRandomized(self, device, resourceId, username_input, phase, xmlpath):
-        retryCounter = 0
-        while retryCounter < CLICK_MAX_RETRIES:
+    def clickButtonRandomized(self, device, resourceId, username_input, phase, xmlpath, tree=None, guard=None):
+        started = perf_counter()
+        deadline = started + CLICK_TIMEOUT_SECONDS
+        attempts = 0
+        last_error = None
+        while True:
+            attempts += 1
             try:
-                # Never parse the old dump if acquiring the new one fails.
-                getDump(device, phase)
-                self.tree = ET.parse(xmlpath)
-                node = self.getNode(resourceId, username_input) if resourceId != "Snapcode button" else self.getSnapNode(resourceId)
-                if node is None:
-                    raise RuntimeError(resourceId + " not found")
-                if "bounds" not in node.attrib:
-                    raise RuntimeError("Bounds not found")
-
-                if resourceId in (CAMERA_CAPTURE_BUTTON_ID, "send_button"):
-                    x, y = randomCoordinatesFromBoundsInset(node.attrib["bounds"], inset_ratio=0.30)
+                if tree is None:
+                    getDump(device, phase)
+                    self.tree = ET.parse(xmlpath)
                 else:
-                    x, y = randomCoordinatesFromBounds(node.attrib["bounds"])
-                logger.info("Clicking on %s, %s", x, y)
-                device.shell(f"input touchscreen tap {x} {y}")
-                return
-            except Exception as e:
-                retryCounter += 1
-                logger.warning(
-                    "Error while clicking (%s/%s): %s",
-                    retryCounter,
-                    CLICK_MAX_RETRIES,
-                    e,
-                )
+                    # Only reuse the immediately preceding verified screen.
+                    self.tree = tree
+                node = (self.getSnapNode(resourceId) if resourceId == "Snapcode button"
+                        else self.getNode(resourceId, username_input))
+                if node is None or node.get("enabled", "true") != "true":
+                    raise RuntimeError(f"{resourceId} not ready")
+                bounds = node.get("bounds", "")
+                x1, y1, x2, y2 = _parseBounds(bounds)
+                if x2 <= x1 or y2 <= y1:
+                    raise RuntimeError(f"{resourceId} has empty bounds")
+                x, y = randomCoordinatesFromBoundsInset(bounds, inset_ratio=0.30)
+            except Exception as exc:
+                last_error = exc
+                tree = None
+                if perf_counter() >= deadline:
+                    raise RuntimeError(f"Timed out waiting for {resourceId}: {last_error}") from exc
+                logger.debug("Waiting for %s: %s", resourceId, exc)
                 sleep(CLICK_RETRY_SLEEP_SECONDS)
+                continue
 
-        raise RuntimeError(f"Tried too many times ({CLICK_MAX_RETRIES})")
+            if guard is not None and not guard(self.tree):
+                raise RuntimeError(f"Precondition no longer holds for {resourceId}")
+            # A shell failure might happen after Android receives the tap.
+            # Never repeat an uncertain tap in this polling loop.
+            ready_seconds = perf_counter() - started
+            logger.info("Clicking %s on %s, %s (ready %.3fs, dumps/polls %s)",
+                        resourceId, x, y, ready_seconds, attempts)
+            tap_started = perf_counter()
+            try:
+                device.shell(f"input touchscreen tap {x} {y}")
+            except Exception as exc:
+                raise RuntimeError(f"Tap outcome uncertain for {resourceId}") from exc
+            logger.debug("Tap %s took %.3fs", resourceId, perf_counter() - tap_started)
+            return
 
 class ClickButton:
     def __init__(self, phase, device):
@@ -105,6 +120,6 @@ class ClickButton:
         self.device = device
         self.xmlpath = str(XML_DIR / f"{phase}.xml")
 
-    def ClickNow(self, node, username):
+    def ClickNow(self, node, username, tree=None, guard=None):
         current = CurrentDump()
-        current.clickButtonRandomized(self.device, node, username, self.phase, self.xmlpath)
+        current.clickButtonRandomized(self.device, node, username, self.phase, self.xmlpath, tree=tree, guard=guard)

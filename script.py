@@ -280,11 +280,15 @@ def choose_recovery_step(failed_step: str, visible: set[str]) -> str | None:
 
 
 
-def _wait_tree(device, predicate, description, timeout=5.0):
-    deadline = perf_counter() + timeout
+def _wait_tree(device, predicate, description, timeout=10.0):
+    started = perf_counter()
+    deadline = started + timeout
+    polls = 0
     while perf_counter() < deadline:
         tree = _dump_current_tree(device)
+        polls += 1
         if tree is not None and predicate(tree):
+            logger.debug("Ready %s after %.3fs (%s dumps)", description, perf_counter() - started, polls)
             return tree
         sleep(0.20)
     raise RuntimeError(f"Timed out waiting for {description}")
@@ -312,26 +316,26 @@ def select_recipient(device, username, use_last):
     if _selection_visible(tree, username):
         raise RuntimeError("Picker already contains a selection; start from a fresh snap")
     if use_last and _node_by_resource(tree, LAST_RECIPIENTS_ID) is not None:
-        ClickButton("clicking_user", device).ClickNow(LAST_RECIPIENTS_ID, None)
+        ClickButton("clicking_user", device).ClickNow(LAST_RECIPIENTS_ID, None, tree=tree)
         # An uncertain click must not be followed by another recipient click.
-        _wait_tree(device, lambda t: _selection_visible(t, username),
+        return _wait_tree(device, lambda t: _selection_visible(t, username),
                    "recipient selection confirmation; capture a post-selection XML dump if this fails")
-        return
 
     if not re.fullmatch(r"[A-Za-z0-9_. -]+", username):
         raise RuntimeError("ADB text input supports ASCII letters, digits, spaces, _, . and - here")
     if _node_by_resource(tree, "clear-button") is not None:
-        ClickButton("clicking_user_search", device).ClickNow("clear-button", None)
-    ClickButton("clicking_user_search", device).ClickNow(SEARCH_FIELD_ID, None)
+        ClickButton("clicking_user_search", device).ClickNow("clear-button", None, tree=tree)
+        tree = None
+    ClickButton("clicking_user_search", device).ClickNow(SEARCH_FIELD_ID, None, tree=tree)
     device.shell("input text " + shlex.quote(username.replace(" ", "%s")))
     def exact_result(t):
         field = _node_by_resource(t, SEARCH_FIELD_ID)
         return (field is not None and field.get("text") == username
                 and any(n.get("resource-id") == USER_ROW_ID and n.get("text") == username
                         for n in t.iter("node")))
-    _wait_tree(device, exact_result, "exact search result")
-    ClickButton("clicking_user", device).ClickNow(USER_ROW_ID, username)
-    _wait_tree(device, lambda t: _selection_visible(t, username),
+    tree = _wait_tree(device, exact_result, "exact search result")
+    ClickButton("clicking_user", device).ClickNow(USER_ROW_ID, username, tree=tree)
+    return _wait_tree(device, lambda t: _selection_visible(t, username),
                "recipient selection confirmation; capture a post-selection XML dump if this fails")
 
 
@@ -377,51 +381,52 @@ def send_one_snap(
     username_input: str,
     timing_profile: ScreenTimingProfile,
     use_last: bool = False,
-) -> None:
+    camera_tree=None,
+):
     step = STEP_CAMERA
     reboot_used = False
+    selection_tree = None
 
     for _ in range(MAX_FLOW_ACTIONS):
-        if step == STEP_DONE:
-            _wait_tree(device, lambda t: _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
-                       and _node_by_resource(t, SEARCH_FIELD_ID) is None,
-                       "return to camera after sending")
-            return
-
         try:
-            click_started = perf_counter()
-            if step == STEP_USER:
-                select_recipient(device, username_input, use_last and not reboot_used)
+            started = perf_counter()
+            if step == STEP_CAMERA:
+                ClickButton(STEP_PHASE[step], device).ClickNow(
+                    CAMERA_CAPTURE_BUTTON_ID, None, tree=camera_tree)
+                camera_tree = None  # Never reuse a tree across a tap.
+            elif step == STEP_USER:
+                selection_tree = select_recipient(device, username_input, use_last and not reboot_used)
             elif step == STEP_SEND:
-                # Send exactly once. An uncertain send must not be retried.
-                tree = _dump_current_tree(device)
-                if tree is None or not _selection_visible(tree, username_input):
+                # The confirmation dump also supplies current send-button bounds.
+                if selection_tree is None or not _selection_visible(selection_tree, username_input):
                     raise RuntimeError("Recipient selection could not be confirmed before sending")
-                ClickButton(STEP_PHASE[STEP_SEND], device).ClickNow(SEND_BUTTON_ID, None)
-                _wait_tree(device, lambda t: _node_by_resource(t, SEARCH_FIELD_ID) is None
-                           and (_node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
-                                or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None),
-                           "recipient picker to close after sending")
+                ClickButton(STEP_PHASE[step], device).ClickNow(
+                    SEND_BUTTON_ID, None, tree=selection_tree,
+                    guard=lambda t: _selection_visible(t, username_input))
+                selection_tree = None
+                tree = _wait_tree(device, lambda t: _node_by_resource(t, SEARCH_FIELD_ID) is None
+                                  and (_node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
+                                       or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None),
+                                  "recipient picker to close after sending")
+                timing_profile.record_clickable_time(step, perf_counter() - started)
+                if _node_by_resource(tree, CAMERA_CAPTURE_BUTTON_ID) is not None:
+                    return tree  # Next snap can use this immediately verified camera.
+                ClickButton(STEP_PHASE[STEP_BACK], device).ClickNow(
+                    BACK_TO_CAMERA_BUTTON_ID, None, tree=tree)
+                return _wait_tree(device, lambda t: _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
+                                  and _node_by_resource(t, SEARCH_FIELD_ID) is None,
+                                  "return to camera after sending")
             else:
                 click_step(device, step, username_input)
-            timing_profile.record_clickable_time(step, perf_counter() - click_started)
-
-            # No fixed sleep here. The next iteration immediately tries the next
-            # click. If that screen is not ready yet, ClickButton polls until the
-            # target element exists and clicks at the first safe moment.
+            timing_profile.record_clickable_time(step, perf_counter() - started)
             step = NEXT_STEP[step]
-
         except RuntimeError:
             if step in (STEP_USER, STEP_SEND, STEP_BACK):
-                # Stop instead of skipping selection or potentially sending twice.
-                raise
+                raise  # Never retry uncertain recipient selection or sending.
+            camera_tree = None
             step, reboot_used = recover_after_failed_step(
-                device=device,
-                failed_step=step,
-                username_input=username_input,
-                reboot_used=reboot_used,
-            )
-
+                device=device, failed_step=step, username_input=username_input,
+                reboot_used=reboot_used)
     raise RuntimeError("Flow recovery exceeded maximum actions for one snap")
 
 
@@ -451,12 +456,14 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     startSnap(device)
     logger.info("Opened snap, start sending pictures")
 
+    camera_tree = None
     pointscounter = 0
     send_started = perf_counter()
 
     try:
         while pointscounter < points_input:
-            send_one_snap(device, username_input, timing_profile, use_last=pointscounter > 0)
+            camera_tree = send_one_snap(device, username_input, timing_profile,
+                                        use_last=pointscounter > 0, camera_tree=camera_tree)
             pointscounter += 1
 
             logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
