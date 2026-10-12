@@ -33,6 +33,8 @@ STEP_BACK = "back"
 STEP_DONE = "done"
 SCREEN_DUMP_PHASE = "flow_recovery"
 MAX_FLOW_ACTIONS = 20
+# Prevent Snapchat heap growth across long runs; restart only between snaps.
+SNAP_RESTART_INTERVAL = 200
 
 # Fast-safe timing:
 # Do not wait for the historical maximum. Each next click actively polls the
@@ -433,6 +435,22 @@ def send_one_snap(
     raise RuntimeError("Flow recovery exceeded maximum actions for one snap")
 
 
+
+def _restart_snap_between_batches(device):
+    """Restart the app only after the preceding snap completed its UI flow."""
+    try:
+        device.shell("input keyevent KEYCODE_WAKEUP")
+        device.shell("am force-stop com.snapchat.android")
+        sleep(0.5)
+        output = device.shell("monkey -p com.snapchat.android -c android.intent.category.LAUNCHER 1")
+        if any(marker in str(output).lower() for marker in ("monkey aborted", "no activities found", "error:")):
+            raise RuntimeError("Snapchat could not be launched")
+    except Exception as exc:
+        raise RuntimeError("Preventieve Snapchat-herstart mislukt; voortgang blijft behouden in de log") from exc
+    return _wait_tree(device, lambda t: not picker_visible(t)
+                      and _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None,
+                      "camera after preventive Snapchat restart", timeout=30.0)
+
 def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     logger.debug("Function mainScript received username=%s", username_input)
 
@@ -461,13 +479,21 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
 
     camera_tree = None
     pointscounter = 0
+    snaps_since_restart = 0
     send_started = perf_counter()
 
     try:
         while pointscounter < points_input:
+            if snaps_since_restart >= SNAP_RESTART_INTERVAL:
+                logger.info("Preventive Snapchat restart after %s/%s completed snaps", pointscounter, points_input)
+                camera_tree = None  # Invalidate every pre-restart screen.
+                camera_tree = _restart_snap_between_batches(device)
+                snaps_since_restart = 0
+                logger.info("Snapchat camera ready; continuing at snap %s", pointscounter + 1)
             camera_tree = send_one_snap(device, username_input, timing_profile,
-                                        use_last=pointscounter > 0, camera_tree=camera_tree)
+                                        use_last=snaps_since_restart > 0, camera_tree=camera_tree)
             pointscounter += 1
+            snaps_since_restart += 1
 
             logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)
 
