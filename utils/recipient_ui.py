@@ -20,6 +20,23 @@ def recipient_matches(tree, username):
             continue
         if node.get("class") == "android.widget.EditText":
             continue
+        # The native Last Snap shortcut repeats the recipient as a subtitle.
+        # It is a shortcut row, not another friend with the same display name.
+        ancestor = parents.get(node)
+        in_last_snap = False
+        while ancestor is not None:
+            if (ancestor.get("class") == "androidx.recyclerview.widget.RecyclerView"
+                    or ancestor.get("resource-id") == "recipient_picker.collection_view"):
+                break
+            if ancestor.get("resource-id") == "select_last_recipients" or any(
+                child.get("text", "").strip().casefold() in ("laatste snap", "last snap")
+                for child in ancestor
+            ):
+                in_last_snap = True
+                break
+            ancestor = parents.get(ancestor)
+        if in_last_snap:
+            continue
         ancestor = node
         in_panel = False
         in_list = False
