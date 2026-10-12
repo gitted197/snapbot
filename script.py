@@ -11,6 +11,7 @@ import logging
 
 from utils import adbConnection, startSnap, rebootSnap, getDump, XML_DIR
 from utils.clicking import ClickButton
+from utils.recipient_ui import SEARCH_IDS, SEND_IDS, by_ids, picker_visible, unique_recipient, selection_visible
 from utils.setup_logging import setup_logging
 
 setup_logging()
@@ -240,7 +241,7 @@ def detect_visible_steps(device, username_input: str) -> set[str]:
     if _node_by_resource(tree, NEXT_BUTTON_ID) is not None:
         visible.add(STEP_NEXT)
     # The send button also exists before any recipient is selected.
-    if _node_by_resource(tree, SEARCH_FIELD_ID) is not None:
+    if picker_visible(tree):
         visible.add(STEP_USER)
     if _node_by_resource(tree, BACK_TO_CAMERA_BUTTON_ID) is not None:
         visible.add(STEP_BACK)
@@ -295,48 +296,50 @@ def _wait_tree(device, predicate, description, timeout=10.0):
 
 
 def _selection_visible(tree, username):
-    # A matching name in the confirmation panel or a selected/checked
-    # recipient is evidence; an enabled send button alone is not.
-    panel = _node_by_resource(tree, "send_confirmation_view")
-    if panel is not None:
-        for node in panel.iter("node"):
-            if username in (node.get("text"), node.get("content-desc")):
-                return True
-    for node in tree.iter("node"):
-        rid = node.get("resource-id", "")
-        if rid in (USER_ROW_ID, LAST_RECIPIENTS_ID) or rid.startswith("select_recipients_friends_"):
-            if node.get("selected") == "true" or node.get("checked") == "true":
-                return True
-    return False
+    return selection_visible(tree, username)
 
 
 def select_recipient(device, username, use_last):
-    tree = _wait_tree(device, lambda t: _node_by_resource(t, SEARCH_FIELD_ID) is not None,
-                      "recipient picker")
-    if _selection_visible(tree, username):
-        raise RuntimeError("Picker already contains a selection; start from a fresh snap")
-    if use_last and _node_by_resource(tree, LAST_RECIPIENTS_ID) is not None:
-        ClickButton("clicking_user", device).ClickNow(LAST_RECIPIENTS_ID, None, tree=tree)
-        # An uncertain click must not be followed by another recipient click.
-        return _wait_tree(device, lambda t: _selection_visible(t, username),
-                   "recipient selection confirmation; capture a post-selection XML dump if this fails")
+    tree = _wait_tree(device, picker_visible, "recipient picker")
+    if by_ids(tree, ("send_confirmation_view", "com.snapchat.android:id/send_to_confirmation_bar")) is not None:
+        # An existing confirmation panel may be empty in Compose; a nonempty
+        # recipient label means this is not a clean starting picker.
+        panel = by_ids(tree, ("send_confirmation_view", "com.snapchat.android:id/send_to_confirmation_bar"))
+        if any(n.get("text") for n in panel.iter("node")
+               if n.get("class") in ("android.widget.TextView", "javaClass")):
+            raise RuntimeError("Picker already contains a selection; start from a fresh snap")
 
-    if not re.fullmatch(r"[A-Za-z0-9_. -]+", username):
-        raise RuntimeError("ADB text input supports ASCII letters, digits, spaces, _, . and - here")
-    if _node_by_resource(tree, "clear-button") is not None:
-        ClickButton("clicking_user_search", device).ClickNow("clear-button", None, tree=tree)
-        tree = None
-    ClickButton("clicking_user_search", device).ClickNow(SEARCH_FIELD_ID, None, tree=tree)
-    device.shell("input text " + shlex.quote(username.replace(" ", "%s")))
-    def exact_result(t):
-        field = _node_by_resource(t, SEARCH_FIELD_ID)
-        return (field is not None and field.get("text") == username
-                and any(n.get("resource-id") == USER_ROW_ID and n.get("text") == username
-                        for n in t.iter("node")))
-    tree = _wait_tree(device, exact_result, "exact search result")
-    ClickButton("clicking_user", device).ClickNow(USER_ROW_ID, username, tree=tree)
-    return _wait_tree(device, lambda t: _selection_visible(t, username),
-               "recipient selection confirmation; capture a post-selection XML dump if this fails")
+    node = unique_recipient(tree, username)
+    if node is not None:
+        ClickButton("clicking_user", device).ClickElement(node, tree)
+    elif use_last and _node_by_resource(tree, LAST_RECIPIENTS_ID) is not None:
+        ClickButton("clicking_user", device).ClickNow(LAST_RECIPIENTS_ID, None, tree=tree)
+    else:
+        if not re.fullmatch(r"[A-Za-z0-9_. -]+", username):
+            raise RuntimeError("Naam niet zichtbaar; ADB zoekinvoer ondersteunt hier alleen ASCII")
+        search = by_ids(tree, SEARCH_IDS)
+        if _node_by_resource(tree, "clear-button") is not None:
+            ClickButton("clicking_user_search", device).ClickNow("clear-button", None, tree=tree)
+            tree = _wait_tree(device, picker_visible, "cleared recipient picker")
+            search = by_ids(tree, SEARCH_IDS)
+        ClickButton("clicking_user_search", device).ClickElement(search, tree)
+        # Native picker exposes its placeholder as text; do not erase it.
+        existing = search.get("text", "")
+        if existing and existing not in ("Versturen naar…", "Versturen naar...", "Send To", "Send to…"):
+            if len(existing) > 200:
+                raise RuntimeError("Zoekveld bevat onverwacht lange tekst")
+            device.shell("input keyevent KEYCODE_MOVE_END")
+            device.shell("input keyevent " + " ".join(["KEYCODE_DEL"] * len(existing)))
+        device.shell("input text " + shlex.quote(username.replace(" ", "%s")))
+        def exact_result(t):
+            field = by_ids(t, SEARCH_IDS)
+            return field is not None and field.get("text") == username and unique_recipient(t, username) is not None
+        tree = _wait_tree(device, exact_result, "exact search result")
+        ClickButton("clicking_user", device).ClickElement(unique_recipient(tree, username), tree)
+
+    # Never repeat a recipient tap when its outcome is uncertain.
+    return _wait_tree(device, lambda t: selection_visible(t, username),
+                      "confirmation of the exact recipient")
 
 
 def click_step(device, step: str, username_input: str) -> None:
@@ -401,10 +404,10 @@ def send_one_snap(
                 if selection_tree is None or not _selection_visible(selection_tree, username_input):
                     raise RuntimeError("Recipient selection could not be confirmed before sending")
                 ClickButton(STEP_PHASE[step], device).ClickNow(
-                    SEND_BUTTON_ID, None, tree=selection_tree,
+                    SEND_IDS, None, tree=selection_tree,
                     guard=lambda t: _selection_visible(t, username_input))
                 selection_tree = None
-                tree = _wait_tree(device, lambda t: _node_by_resource(t, SEARCH_FIELD_ID) is None
+                tree = _wait_tree(device, lambda t: not picker_visible(t)
                                   and (_node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
                                        or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None),
                                   "recipient picker to close after sending")
@@ -414,7 +417,7 @@ def send_one_snap(
                 ClickButton(STEP_PHASE[STEP_BACK], device).ClickNow(
                     BACK_TO_CAMERA_BUTTON_ID, None, tree=tree)
                 return _wait_tree(device, lambda t: _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
-                                  and _node_by_resource(t, SEARCH_FIELD_ID) is None,
+                                  and not picker_visible(t),
                                   "return to camera after sending")
             else:
                 click_step(device, step, username_input)

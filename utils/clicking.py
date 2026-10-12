@@ -57,7 +57,7 @@ class CurrentDump:
     def getNode(self, resourceId, username_input):
         # Iterate instead of interpolating names into XPath (quotes are valid).
         matches = [node for node in self.tree.iter("node")
-                   if node.get("resource-id") == resourceId
+                   if node.get("resource-id") in (resourceId if isinstance(resourceId, tuple) else (resourceId,))
                    and (username_input is None or node.get("text") == username_input)]
         if len(matches) > 1:
             raise RuntimeError(f"Ambiguous selector: {resourceId!r}, {username_input!r}")
@@ -123,3 +123,20 @@ class ClickButton:
     def ClickNow(self, node, username, tree=None, guard=None):
         current = CurrentDump()
         current.clickButtonRandomized(self.device, node, username, self.phase, self.xmlpath, tree=tree, guard=guard)
+
+    def ClickElement(self, node, tree):
+        """Tap a uniquely resolved node from the immediately preceding dump."""
+        if node is None or not any(n is node for n in tree.iter("node")):
+            raise RuntimeError("Recipient node is not part of the current dump")
+        if node.get("enabled", "true") != "true":
+            raise RuntimeError("Recipient is disabled")
+        bounds = node.get("bounds", "")
+        x1, y1, x2, y2 = _parseBounds(bounds)
+        if x2 <= x1 or y2 <= y1:
+            raise RuntimeError("Recipient has empty bounds")
+        x, y = randomCoordinatesFromBoundsInset(bounds, inset_ratio=0.30)
+        logger.info("Clicking exact recipient/search node on %s, %s", x, y)
+        try:
+            self.device.shell(f"input touchscreen tap {x} {y}")
+        except Exception as exc:
+            raise RuntimeError("Recipient/search tap outcome uncertain") from exc

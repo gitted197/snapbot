@@ -10,6 +10,7 @@ from discord.ext import commands  # type: ignore
 
 import script
 import script_adduser
+from utils import check_adb_access, AdbAccessError
 from utils.bot_utils import setEmbed, setAddSnapEmbed, setLoggingEmbed, getLogs
 from utils.setup_logging import setup_logging
 
@@ -56,6 +57,13 @@ async def snap(ctx: commands.Context):
             botmsg = await ctx.send("Program is currently running. Please try again later")
             await asyncio.sleep(3)
             await botmsg.delete()
+            return
+
+        try:
+            await asyncio.to_thread(check_adb_access)
+        except AdbAccessError as exc:
+            state.last_error = str(exc)
+            await ctx.send(f"❌ !snap kan niet starten: {exc}\nHerstel dit en voer opnieuw !snap uit.")
             return
 
         state.running = True
@@ -108,11 +116,11 @@ async def snap(ctx: commands.Context):
             # Run blocking script in a worker thread
             try:
                 generated = await asyncio.to_thread(script.mainScript, username, points)
-                state.points_counter = generated
+                state.points_counter, elapsed_seconds = generated
             except Exception as e:
                 logger.exception("snap failed")
                 state.last_error = str(e)
-                await sent.edit(content=f"Fout: {e}")
+                await sent.edit(content=f"Fout: {e}", embed=None)
                 return
 
             description = description + f"\nDone. Generated {state.points_counter} points."
