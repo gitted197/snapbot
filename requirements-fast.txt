@@ -1,0 +1,2 @@
+# Optional: install this in addition to the existing requirements.
+uiautomator2>=3,<4

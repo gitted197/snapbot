@@ -7,6 +7,7 @@ import os
 import subprocess
 
 from utils.setup_logging import setup_logging
+from utils.fast_dump import backend_name, prepare_backend, fast_xml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../snapbot
 XML_DIR = PROJECT_ROOT / "xml"
@@ -64,6 +65,8 @@ def adbConnection():
     device = adb.device(serial)
     if device is None:
         raise AdbAccessError("De telefoon is na de ADB-controle niet meer beschikbaar.")
+    prepare_backend(device)
+    logger.info("XML backend: %s", backend_name())
     return device
 
 
@@ -103,6 +106,11 @@ def getDump(device, phase):
     # Invalidate both copies before acquisition; failed dumps cannot reuse XML.
     local.unlink(missing_ok=True)
     try:
+        backend = backend_name()
+        if backend == "uiautomator2":
+            local.write_text(fast_xml(device), encoding="utf-8")
+            logger.debug("XML dump %s via %s took %.3fs", phase, backend, perf_counter() - started)
+            return
         output = device.shell(f"rm -f {remote} && uiautomator dump {remote}")
         if "dumped to:" not in str(output).lower():
             raise RuntimeError(f"uiautomator did not confirm a new dump: {output}")
