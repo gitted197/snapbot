@@ -34,7 +34,7 @@ STEP_DONE = "done"
 SCREEN_DUMP_PHASE = "flow_recovery"
 MAX_FLOW_ACTIONS = 20
 # Prevent Snapchat heap growth across long runs; restart only between snaps.
-SNAP_RESTART_INTERVAL = 200
+SNAP_RESTART_INTERVAL = 0  # 0 disables preventive restarts; use 200 to re-enable.
 
 # Fast-safe timing:
 # Do not wait for the historical maximum. Each next click actively polls the
@@ -391,8 +391,18 @@ def send_one_snap(
     step = STEP_CAMERA
     reboot_used = False
     selection_tree = None
+    send_attempted = False
 
     for _ in range(MAX_FLOW_ACTIONS):
+        if step == STEP_DONE:
+            camera_tree = _wait_tree(
+                device, lambda t: not picker_visible(t)
+                and _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None,
+                "camera after completed flow", timeout=30.0)
+            if send_attempted:
+                return camera_tree
+            # Recovery can reach Back without having sent a snap. Do not count it.
+            step = STEP_CAMERA
         try:
             started = perf_counter()
             if step == STEP_CAMERA:
@@ -401,10 +411,21 @@ def send_one_snap(
                 camera_tree = None  # Never reuse a tree across a tap.
             elif step == STEP_USER:
                 selection_tree = select_recipient(device, username_input, use_last and not reboot_used)
+            elif step == STEP_BACK:
+                click_step(device, STEP_BACK, username_input)
+                camera_tree = _wait_tree(
+                    device, lambda t: not picker_visible(t)
+                    and _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None,
+                    "camera after recovery back", timeout=30.0)
+                if send_attempted:
+                    return camera_tree
+                step = STEP_CAMERA
+                continue
             elif step == STEP_SEND:
                 # The confirmation dump also supplies current send-button bounds.
                 if selection_tree is None or not _selection_visible(selection_tree, username_input):
                     raise RuntimeError("Recipient selection could not be confirmed before sending")
+                send_attempted = True
                 ClickButton(STEP_PHASE[step], device).ClickNow(
                     SEND_IDS, None, tree=selection_tree,
                     guard=lambda t: _selection_visible(t, username_input))
@@ -484,7 +505,7 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
 
     try:
         while pointscounter < points_input:
-            if snaps_since_restart >= SNAP_RESTART_INTERVAL:
+            if SNAP_RESTART_INTERVAL > 0 and snaps_since_restart >= SNAP_RESTART_INTERVAL:
                 logger.info("Preventive Snapchat restart after %s/%s completed snaps", pointscounter, points_input)
                 camera_tree = None  # Invalidate every pre-restart screen.
                 camera_tree = _restart_snap_between_batches(device)
