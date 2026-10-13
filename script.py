@@ -34,7 +34,7 @@ STEP_DONE = "done"
 SCREEN_DUMP_PHASE = "flow_recovery"
 MAX_FLOW_ACTIONS = 20
 # Prevent Snapchat heap growth across long runs; restart only between snaps.
-SNAP_RESTART_INTERVAL = 0  # 0 disables preventive restarts; use 200 to re-enable.
+SNAP_RESTART_INTERVAL = 200  # Set to 0 to disable preventive restarts.
 
 # Fast-safe timing:
 # Do not wait for the historical maximum. Each next click actively polls the
