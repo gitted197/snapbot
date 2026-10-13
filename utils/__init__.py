@@ -7,7 +7,7 @@ import os
 import subprocess
 
 from utils.setup_logging import setup_logging
-from utils.fast_dump import backend_name, prepare_backend, fast_xml
+from utils.ui_dump import prepare_ui, dump_xml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../snapbot
 XML_DIR = PROJECT_ROOT / "xml"
@@ -65,8 +65,8 @@ def adbConnection():
     device = adb.device(serial)
     if device is None:
         raise AdbAccessError("De telefoon is na de ADB-controle niet meer beschikbaar.")
-    prepare_backend(device)
-    logger.info("XML backend: %s", backend_name())
+    prepare_ui(device)
+    logger.info("UI connection ready: uiautomator2")
     return device
 
 
@@ -101,23 +101,12 @@ def getDump(device, phase):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", phase):
         raise ValueError("Invalid XML dump phase")
     started = perf_counter()
-    remote = f"/sdcard/{phase}.xml"
     local = XML_DIR / f"{phase}.xml"
-    # Invalidate both copies before acquisition; failed dumps cannot reuse XML.
+    # Failed acquisition must never leave an old screen for a later click.
     local.unlink(missing_ok=True)
     try:
-        backend = backend_name()
-        if backend == "uiautomator2":
-            local.write_text(fast_xml(device), encoding="utf-8")
-            logger.debug("XML dump %s via %s took %.3fs", phase, backend, perf_counter() - started)
-            return
-        output = device.shell(f"rm -f {remote} && uiautomator dump {remote}")
-        if "dumped to:" not in str(output).lower():
-            raise RuntimeError(f"uiautomator did not confirm a new dump: {output}")
-        result = device.pull(remote, str(local))
-        if result is False or not local.is_file() or local.stat().st_size == 0:
-            raise RuntimeError("XML dump transfer failed")
-        logger.debug("XML dump %s took %.3fs", phase, perf_counter() - started)
+        local.write_text(dump_xml(device), encoding="utf-8")
+        logger.debug("XML dump %s via uiautomator2 took %.3fs", phase, perf_counter() - started)
     except Exception as exc:
         local.unlink(missing_ok=True)
         raise RuntimeError(f"Could not acquire fresh XML dump for {phase}") from exc

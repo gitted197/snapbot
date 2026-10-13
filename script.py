@@ -1,9 +1,6 @@
 import sys
 import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
-import json
-from pathlib import Path
 from time import perf_counter, sleep
 import re
 import shlex
@@ -34,14 +31,7 @@ STEP_DONE = "done"
 SCREEN_DUMP_PHASE = "flow_recovery"
 MAX_FLOW_ACTIONS = 20
 # Prevent Snapchat heap growth across long runs; restart only between snaps.
-SNAP_RESTART_INTERVAL = 200  # Set to 0 to disable preventive restarts.
-
-# Fast-safe timing:
-# Do not wait for the historical maximum. Each next click actively polls the
-# target element and clicks as soon as that element exists in the UI dump.
-# These values only tune diagnostics; they are not fixed sleep delays.
-TIMING_PROFILE_PATH = XML_DIR / "screen_wait_profile.json"
-TIMING_EWMA_ALPHA = 0.25
+SNAP_RESTART_INTERVAL = 200
 
 STEP_PHASE = {
     STEP_CAMERA: "clicking_camera",
@@ -68,140 +58,6 @@ NEXT_STEP = {
 }
 
 
-@dataclass
-class ScreenTimingProfile:
-    """Stores timing diagnostics without using them as fixed sleep delays."""
-
-    path: Path = TIMING_PROFILE_PATH
-    fastest_clickable_seconds: dict[str, float] = field(default_factory=dict)
-    slowest_clickable_seconds: dict[str, float] = field(default_factory=dict)
-    average_clickable_seconds: dict[str, float] = field(default_factory=dict)
-    samples_seen: dict[str, int] = field(default_factory=dict)
-
-    @classmethod
-    def load(cls, path: Path = TIMING_PROFILE_PATH) -> "ScreenTimingProfile":
-        if not path.exists():
-            return cls(path=path)
-
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            logger.exception("Could not load screen timing profile; starting fresh")
-            return cls(path=path)
-
-        profile = cls(path=path)
-
-        # Backward compatibility with the previous max-wait profile. The old max
-        # values are kept only as diagnostics; they are not used as sleeps.
-        old_max = {
-            str(step): float(seconds)
-            for step, seconds in data.get("max_load_seconds", {}).items()
-        }
-
-        profile.fastest_clickable_seconds = {
-            str(step): float(seconds)
-            for step, seconds in data.get("fastest_clickable_seconds", {}).items()
-        }
-        profile.slowest_clickable_seconds = {
-            str(step): float(seconds)
-            for step, seconds in data.get("slowest_clickable_seconds", old_max).items()
-        }
-        profile.average_clickable_seconds = {
-            str(step): float(seconds)
-            for step, seconds in data.get("average_clickable_seconds", {}).items()
-        }
-        profile.samples_seen = {
-            str(step): int(count)
-            for step, count in data.get("samples_seen", {}).items()
-        }
-        return profile
-
-    def save(self) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "version": 3,
-                "mode": "click_as_soon_as_target_is_visible",
-                "fastest_clickable_seconds": self.fastest_clickable_seconds,
-                "slowest_clickable_seconds": self.slowest_clickable_seconds,
-                "average_clickable_seconds": self.average_clickable_seconds,
-                "samples_seen": self.samples_seen,
-            }
-            with self.path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
-        except Exception:
-            logger.exception("Could not save screen timing profile")
-
-    def record_clickable_time(self, step: str, elapsed_seconds: float) -> None:
-        if elapsed_seconds <= 0:
-            return
-
-        elapsed_seconds = round(elapsed_seconds, 3)
-        previous_fastest = self.fastest_clickable_seconds.get(step)
-        previous_slowest = self.slowest_clickable_seconds.get(step)
-        previous_average = self.average_clickable_seconds.get(step)
-        previous_samples = self.samples_seen.get(step, 0)
-
-        new_fastest = previous_fastest is None or elapsed_seconds < previous_fastest
-        new_slowest = previous_slowest is None or elapsed_seconds > previous_slowest
-
-        if new_fastest:
-            self.fastest_clickable_seconds[step] = elapsed_seconds
-        if new_slowest:
-            self.slowest_clickable_seconds[step] = elapsed_seconds
-
-        if previous_average is None:
-            self.average_clickable_seconds[step] = elapsed_seconds
-        else:
-            self.average_clickable_seconds[step] = round(
-                previous_average + TIMING_EWMA_ALPHA * (elapsed_seconds - previous_average),
-                3,
-            )
-
-        self.samples_seen[step] = previous_samples + 1
-
-        if new_fastest:
-            logger.info(
-                "New fastest safe clickable time for %s: %.3fs.",
-                step,
-                elapsed_seconds,
-            )
-        else:
-            logger.debug(
-                "Clickable time for %s: %.3fs. Fastest: %.3fs. Average: %.3fs.",
-                step,
-                elapsed_seconds,
-                self.fastest_clickable_seconds.get(step, elapsed_seconds),
-                self.average_clickable_seconds.get(step, elapsed_seconds),
-            )
-
-        # Save on meaningful boundaries; final save also happens after the run.
-        if new_fastest or new_slowest or self.samples_seen[step] <= 3:
-            self.save()
-
-    def describe(self) -> str:
-        steps = sorted(
-            set(self.fastest_clickable_seconds)
-            | set(self.average_clickable_seconds)
-            | set(self.slowest_clickable_seconds)
-        )
-        if not steps:
-            return "no measured clickable timings yet"
-
-        parts = []
-        for step in steps:
-            fastest = self.fastest_clickable_seconds.get(step, 0.0)
-            average = self.average_clickable_seconds.get(step, 0.0)
-            slowest = self.slowest_clickable_seconds.get(step, 0.0)
-            samples = self.samples_seen.get(step, 0)
-            parts.append(
-                f"{step}: fastest={fastest:.3f}s, avg={average:.3f}s, "
-                f"slowest={slowest:.3f}s, samples={samples}"
-            )
-        return "; ".join(parts)
-
-
 def formatDuration(seconds: float) -> str:
     seconds_int = int(round(seconds))
     minutes, seconds = divmod(seconds_int, 60)
@@ -216,10 +72,6 @@ def formatDuration(seconds: float) -> str:
 
 def _node_by_resource(tree: ET.ElementTree, resource_id: str):
     return tree.find(f'.//node[@resource-id="{resource_id}"]')
-
-
-def _node_by_text(tree: ET.ElementTree, text: str):
-    return tree.find(f'.//node[@text="{text}"]')
 
 
 def _dump_current_tree(device) -> ET.ElementTree | None:
@@ -384,7 +236,6 @@ def recover_after_failed_step(
 def send_one_snap(
     device,
     username_input: str,
-    timing_profile: ScreenTimingProfile,
     use_last: bool = False,
     camera_tree=None,
 ):
@@ -404,7 +255,6 @@ def send_one_snap(
             # Recovery can reach Back without having sent a snap. Do not count it.
             step = STEP_CAMERA
         try:
-            started = perf_counter()
             if step == STEP_CAMERA:
                 ClickButton(STEP_PHASE[step], device).ClickNow(
                     CAMERA_CAPTURE_BUTTON_ID, None, tree=camera_tree)
@@ -434,7 +284,6 @@ def send_one_snap(
                                   and (_node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
                                        or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None),
                                   "recipient picker to close after sending")
-                timing_profile.record_clickable_time(step, perf_counter() - started)
                 if _node_by_resource(tree, CAMERA_CAPTURE_BUTTON_ID) is not None:
                     return tree  # Next snap can use this immediately verified camera.
                 ClickButton(STEP_PHASE[STEP_BACK], device).ClickNow(
@@ -444,7 +293,6 @@ def send_one_snap(
                                   "return to camera after sending")
             else:
                 click_step(device, step, username_input)
-            timing_profile.record_clickable_time(step, perf_counter() - started)
             step = NEXT_STEP[step]
         except RuntimeError:
             if step in (STEP_USER, STEP_SEND, STEP_BACK):
@@ -491,9 +339,6 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     device = adbConnection()
     logger.debug("Connected to adb device")
 
-    timing_profile = ScreenTimingProfile.load()
-    logger.info("Loaded screen timing profile: %s", timing_profile.describe())
-
     # Unlocking phone, starting Snap
     startSnap(device)
     logger.info("Opened snap, start sending pictures")
@@ -505,13 +350,13 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
 
     try:
         while pointscounter < points_input:
-            if SNAP_RESTART_INTERVAL > 0 and snaps_since_restart >= SNAP_RESTART_INTERVAL:
+            if snaps_since_restart >= SNAP_RESTART_INTERVAL:
                 logger.info("Preventive Snapchat restart after %s/%s completed snaps", pointscounter, points_input)
                 camera_tree = None  # Invalidate every pre-restart screen.
                 camera_tree = _restart_snap_between_batches(device)
                 snaps_since_restart = 0
                 logger.info("Snapchat camera ready; continuing at snap %s", pointscounter + 1)
-            camera_tree = send_one_snap(device, username_input, timing_profile,
+            camera_tree = send_one_snap(device, username_input,
                                         use_last=snaps_since_restart > 0, camera_tree=camera_tree)
             pointscounter += 1
             snaps_since_restart += 1
@@ -527,8 +372,6 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
         raise
 
     elapsed_seconds = perf_counter() - send_started
-    timing_profile.save()
-    logger.info("Final screen timing profile: %s", timing_profile.describe())
     logger.info(
         "Done sending %s/%s snaps in %s!",
         pointscounter,

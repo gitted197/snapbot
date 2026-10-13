@@ -1,246 +1,73 @@
 # SnapBot
 
-A Discord-controlled Python bot that uses ADB to automate a few Snapchat actions on a connected Android device.
+Discord bot voor een via ADB verbonden Android-telefoon. De enige schermdumpmethode
+is een blijvende `uiautomator2`-verbinding. ADB voert de tikken uit.
 
-At a high level, the project lets you:
+## Installeren
 
-- send repeated snaps to a target username from Discord
-- check whether the bot is currently busy
-- read recent bot logs from Discord
-
-The Discord bot is the main entry point (`bot.py`). It collects input from a Discord user, then runs the blocking phone-automation work in background threads via `script.py` and `script_adduser.py`.
-
-## How it works
-
-The bot connects to an Android device through ADB, opens Snapchat, dumps the current Android UI with `uiautomator`, finds UI elements in the XML, and taps randomized coordinates inside each element's bounds. That click flow is implemented in `clicking.py` and the shared ADB helpers in `utils/__init__.py`.
-
-For the main send loop, `script.py` repeatedly:
-
-1. opens the camera capture button
-2. goes to the send screen
-3. selects the target user
-4. presses send
-5. returns to the camera view
-
-The scheduled restart every 10 sends has been removed. Snapchat is only rebooted once as recovery if the current screen cannot be detected.
-
-## Features
-
-### Discord commands
-
-- `!snap` — interactive flow to enter a Snapchat username and the number of points/snaps to generate
-- `!status` — shows whether a run is currently active and how many sends have completed so far
-- `!logs` — shows the tail of the current log file
-- `!purge` — deletes the current Discord channel and recreates it in the same position
-
-The bot uses an internal lock so only one automation run can happen at a time.
-
-### Logging
-
-Logging is configured with a timed rotating file handler. By default the bot writes to `botlog.log`, rotates at midnight, and keeps 14 backups.
-
-### Authentication
-
-The Discord token is loaded from:
-
-1. `DISCORD_TOKEN` environment variable
-2. `config.ini` under `[BOT] token=...`
-
-The environment variable is preferred.
-
-## Project layout
-
-The imports show that this project is expected to be organized with a `utils` package, even if your uploaded files are currently flattened.
-
-Suggested layout:
-
-```text
-snapbot/
-├─ bot.py
-├─ script.py
-├─ script_adduser.py
-├─ requirements.txt
-└─ utils/
-   ├─ __init__.py
-   ├─ bot_utils.py
-   ├─ clicking.py
-   ├─ setup_logging.py
-   ├─ bounds.py
-   └─ snapcode.py
-```
-
-If you keep everything in one folder, you will need to update imports like `from utils.bot_utils import ...` and `from utils import adbConnection`.
-
-## Requirements
-
-### Software
-
-- Python 3.10+ recommended
-- ADB installed and available on your PATH
-- an Android phone connected through USB or network ADB
-- USB debugging enabled on the phone
-- Snapchat installed and already signed in on the device
-- a Discord bot token
-
-### Python packages
-
-Install the main dependencies with:
+Gebruik Python 3.11+, ADB in PATH, een ontgrendelde telefoon met USB-debugging,
+en Snapchat met een aangemeld account.
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv env
+source env/bin/activate
+python -m pip install -r requirements.txt
+adb devices -l
+python3 bot.py
 ```
 
-The provided `requirements.txt` includes the bot and ADB dependencies such as `discord.py` and `pure-python-adb`.
+Stel `DISCORD_TOKEN` in als omgevingsvariabele, of gebruik `config.ini` met
+`[BOT]` en `token=...`. Bij meerdere ADB-apparaten kies je de telefoon met
+`ANDROID_SERIAL`. Voor de eerste UI-verbinding start uiautomator2 zo nodig
+zijn automatiseringsservice op de telefoon.
 
-## Installation
+Er is geen backendkeuze meer; `SNAPBOT_XML_BACKEND` wordt niet gebruikt.
+Alle Python-afhankelijkheden staan in `requirements.txt`.
 
-### 1. Clone the project
+## Werking
+
+- `!snap`: controleert ADB-aanwezigheid, toestemming en shelltoegang vóór de invoervragen.
+- Geef de exacte zichtbare ontvangernaam en het aantal snaps op; `/quit` stopt de invoer.
+- Een zichtbare unieke naam wordt direct geselecteerd. Zoeken is de fallback.
+- Beide waargenomen Snapchat-schermvarianten worden ondersteund.
+- De bevestigingsbalk moet precies de bedoelde ontvanger tonen vóór verzending.
+- Verse XML wordt voor de bijbehorende klik hergebruikt; onzekere verzendklikken
+  worden niet blind herhaald.
+- Na elke 200 afgeronde snaps wordt Snapchat herstart, alleen als nog snaps volgen.
+  De teller blijft behouden en de ontvanger wordt opnieuw gecontroleerd.
+- Herstel via de terugknop vóór verzending telt niet als een afgeronde snap.
+
+Andere bestaande opdrachten: `!addsnap`, `!status`, `!logs`, `!purge`.
+`!status` gebruikt de huidige bestaande botstatus; de teller wordt pas na een
+voltooide run bijgewerkt en is geen live voortgangsrapportage.
+
+Direct zonder Discord:
 
 ```bash
-git clone <your-repo-url>
-cd snapbot
+python3 script.py clo 450
 ```
 
-### 2. Create and activate a virtual environment
+Gebruik de telefoon niet handmatig tijdens een run. Houd hem ontgrendeld;
+`adb shell svc power stayon true` kan slapen tijdens het laden voorkomen,
+maar omzeilt geen pincode. Een voltooide UI-flow is geen bewijs van serverbezorging.
+Bij ADB-verlies, onbekende schermen of onzekere selectie/verzending kan de run
+nog stoppen; automatisch pauzeren/hervatten is niet toegevoegd.
 
-#### Windows
+## Logging en onderhoud
+
+Logs staan standaard in `botlog.log` en roteren dagelijks. Met `BOT_LOG_FILE`
+is het pad instelbaar. Klik-, dump- en wachttijden worden gelogd zonder een
+persistente timinghistorie. Bestaande `xml/screen_wait_profile.json`-bestanden
+worden niet meer gelezen en mogen desgewenst handmatig verwijderd worden.
+
+De oude CLI-dumpbackend, backendbenchmark, aparte snelle requirements,
+GUI-prototype en ongebruikte dubbele helpermodules zijn verwijderd.
+Snapchat-updates kunnen selectors veranderen; controleer bij fouten de actuele XML.
+
+## Validatie na bijwerken
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+python3 -m py_compile bot.py script.py script_adduser.py utils/__init__.py utils/ui_dump.py utils/clicking.py utils/recipient_ui.py
 ```
 
-#### macOS / Linux
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Set your Discord token
-
-Preferred:
-
-```bash
-export DISCORD_TOKEN="your-token-here"
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:DISCORD_TOKEN="your-token-here"
-```
-
-Or create a `config.ini` file:
-
-```ini
-[BOT]
-token=your-token-here
-```
-
-### 5. Connect and verify your Android device
-
-```bash
-adb devices
-```
-
-Make sure:
-
-- your phone appears in the device list
-- you accepted the device authorization prompt
-- the phone is awake or can be woken by ADB
-- Snapchat opens normally on the device
-
-## Running the bot
-
-Start the Discord bot with:
-
-```bash
-python bot.py
-```
-
-Once the bot is online, use the commands in your Discord server.
-
-## Usage
-
-### Send snaps / generate points
-
-1. Run `!snap` in Discord.
-2. Enter the target Snapchat username.
-3. Enter the number of sends to perform.
-4. Wait for the bot to finish.
-
-You can cancel the interactive flow by replying with:
-
-```text
-/quit
-```
-
-## Running helper scripts directly
-
-You can also call the worker scripts without Discord.
-
-### Send snaps directly
-
-```bash
-python script.py <username> <points>
-```
-
-Example:
-
-```bash
-python script.py exampleuser 25
-```
-
-## Notes about device compatibility
-
-This project relies on Snapchat Android UI identifiers and UI dumps. If Snapchat changes its layout, IDs, or flow, the automation may stop working until the selectors are updated.
-
-The repository also contains an older `snapchat.py` GUI prototype that appears to be a more device-specific version built around screenshots, image matching, and fixed Pixel 5 coordinates. It is not part of the main Discord bot flow.
-
-If you want to use that legacy GUI script, you will likely need extra packages that are **not** listed in the current `requirements.txt`, such as Pillow, PySimpleGUI, pyautogui, and pyscreeze.
-
-## Troubleshooting
-
-### `No Discord token found`
-
-Set `DISCORD_TOKEN` or create `config.ini` with:
-
-```ini
-[BOT]
-token=your-token-here
-```
-
-### `No adb devices connected`
-
-- confirm USB debugging is enabled
-- run `adb devices`
-- reconnect the cable or re-authorize the device
-
-### Snapchat opens but clicks fail
-
-- unlock the phone first
-- make sure Snapchat is already logged in
-- verify the app UI still matches the expected selectors
-- check the generated log output for the failing step
-
-
-## Log files
-
-By default logs are written to:
-
-```text
-botlog.log
-```
-
-You can override the log file path with:
-
-```bash
-export BOT_LOG_FILE="custom.log"
-```
+Test eerst 3 snaps en daarna 450, inclusief herstarts na 200 en 400.
