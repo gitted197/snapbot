@@ -38,8 +38,7 @@ Alle Python-afhankelijkheden staan in `requirements.txt`.
 - Herstel via de terugknop vóór verzending telt niet als een afgeronde snap.
 
 Andere bestaande opdrachten: `!addsnap`, `!status`, `!logs`, `!purge`.
-`!status` gebruikt de huidige bestaande botstatus; de teller wordt pas na een
-voltooide run bijgewerkt en is geen live voortgangsrapportage.
+`!status` toont bevestigde voortgang en of een run gepauzeerd is.
 
 Direct zonder Discord:
 
@@ -71,3 +70,35 @@ python3 -m py_compile bot.py script.py script_adduser.py utils/__init__.py utils
 ```
 
 Test eerst 3 snaps en daarna 450, inclusief herstarts na 200 en 400.
+
+
+## Verzendbevestiging en pauzeren
+
+De teller verhoogt alleen na de nieuwe Snapchat-melding `Snap verstuurd!`, of
+na jouw expliciete bevestiging met `!snapverder verzonden`. Dit is de bevestiging
+van Snapchat, geen ontvangstbevestiging van de andere gebruiker.
+`Verzenden…` en terugkeer naar de camera tellen niet als geslaagde verzending.
+Na 10 seconden zonder succesmelding pauzeert de run zonder nieuwe snaps te sturen.
+Hij blijft kijken of Snapchat alsnog succes meldt. Herstel internet en wacht.
+
+Androids gevalideerde standaardnetwerk wordt vóór de volgende snap en vóór de
+verzendtik gecontroleerd via `dumpsys connectivity`. Bij een herkende offline-status
+wacht de bot tot herstel en meldt dit eenmaal in Discord. Een onbekend dumpformaat
+is geen bewijs van internettoegang: in dat geval blijft alleen de verplichte
+Snapchat-succescontrole actief. VALIDATED garandeert geen bereikbaarheid van Snapchat.
+
+Alleen de eigenaar van de run kan in hetzelfde kanaal beslissen:
+- `!snapnaam <zichtbare naam>`: nieuwe naam bij geen unieke zoekmatch. De reeds
+  bevestigde teller blijft behouden; resterende snaps gaan naar de nieuwe naam.
+- `!snapverder verzonden`: tel de huidige onbevestigde snap alleen nadat je zelf
+  hebt vastgesteld dat die is verstuurd.
+- `!snapverder opnieuw`: opnieuw proberen; controleer eerst de Snapchat-wachtrij
+  om dubbel verzenden te voorkomen. Internet wordt vóór de retry gecontroleerd.
+- `!snapstop`: stop de actieve worker; een al getikte snap kan nog onderweg zijn.
+
+`!status` toont live bevestigde voortgang en actief/gepauzeerd. Tijdens de initiële
+invoervragen blijft `/quit` de annuleringsmethode.
+Pauzeren houdt voortgang in het lopende proces, niet over een herstart van de bot.
+Deze patch implementeert geen volledig herstel van ADB-verlies of alle onbekende UI-fouten.
+De successelector is gebaseerd op twee Nederlandse dumps van de testtelefoon;
+een andere app-taal/layout kan pauzeren veroorzaken en vraagt selectorcontrole.

@@ -8,6 +8,8 @@ import logging
 
 from utils import adbConnection, startSnap, rebootSnap, getDump, XML_DIR
 from utils.clicking import ClickButton
+from utils.run_control import RunControl, RunStopped, RecipientNotFound
+from utils.send_feedback import success_visible, wait_for_internet, wait_for_send
 from utils.recipient_ui import SEARCH_IDS, SEND_IDS, by_ids, picker_visible, unique_recipient, selection_visible
 from utils.setup_logging import setup_logging
 
@@ -163,14 +165,17 @@ def select_recipient(device, username, use_last):
                if n.get("class") in ("android.widget.TextView", "javaClass")):
             raise RuntimeError("Picker already contains a selection; start from a fresh snap")
 
-    node = unique_recipient(tree, username)
+    try:
+        node = unique_recipient(tree, username)
+    except RuntimeError as exc:
+        raise RecipientNotFound(str(exc)) from exc
     if node is not None:
         ClickButton("clicking_user", device).ClickElement(node, tree)
     elif use_last and _node_by_resource(tree, LAST_RECIPIENTS_ID) is not None:
         ClickButton("clicking_user", device).ClickNow(LAST_RECIPIENTS_ID, None, tree=tree)
     else:
         if not re.fullmatch(r"[A-Za-z0-9_. -]+", username):
-            raise RuntimeError("Naam niet zichtbaar; ADB zoekinvoer ondersteunt hier alleen ASCII")
+            raise RecipientNotFound("Naam niet zichtbaar; zoekinvoer ondersteunt hier alleen ASCII")
         search = by_ids(tree, SEARCH_IDS)
         if _node_by_resource(tree, "clear-button") is not None:
             ClickButton("clicking_user_search", device).ClickNow("clear-button", None, tree=tree)
@@ -188,7 +193,14 @@ def select_recipient(device, username, use_last):
         def exact_result(t):
             field = by_ids(t, SEARCH_IDS)
             return field is not None and field.get("text") == username and unique_recipient(t, username) is not None
-        tree = _wait_tree(device, exact_result, "exact search result")
+        try:
+            tree = _wait_tree(device, exact_result, "exact search result")
+        except RuntimeError as exc:
+            current = _dump_current_tree(device)
+            field = by_ids(current, SEARCH_IDS) if current is not None else None
+            if field is not None and field.get("text") == username:
+                raise RecipientNotFound(f"Geen unieke zichtbare match voor {username!r}") from exc
+            raise
         ClickButton("clicking_user", device).ClickElement(unique_recipient(tree, username), tree)
 
     # Never repeat a recipient tap when its outcome is uncertain.
@@ -238,13 +250,16 @@ def send_one_snap(
     username_input: str,
     use_last: bool = False,
     camera_tree=None,
+    control=None,
 ):
+    control = control or RunControl()
     step = STEP_CAMERA
     reboot_used = False
     selection_tree = None
     send_attempted = False
 
     for _ in range(MAX_FLOW_ACTIONS):
+        control.check()
         if step == STEP_DONE:
             camera_tree = _wait_tree(
                 device, lambda t: not picker_visible(t)
@@ -275,15 +290,24 @@ def send_one_snap(
                 # The confirmation dump also supplies current send-button bounds.
                 if selection_tree is None or not _selection_visible(selection_tree, username_input):
                     raise RuntimeError("Recipient selection could not be confirmed before sending")
+                wait_for_internet(device, control)
+                # Internet recovery may have taken minutes; never use old bounds.
+                selection_tree = _wait_tree(device, lambda t: selection_visible(t, username_input)
+                                            and not success_visible(t), "fresh recipient confirmation before send")
                 send_attempted = True
                 ClickButton(STEP_PHASE[step], device).ClickNow(
                     SEND_IDS, None, tree=selection_tree,
                     guard=lambda t: _selection_visible(t, username_input))
                 selection_tree = None
-                tree = _wait_tree(device, lambda t: not picker_visible(t)
-                                  and (_node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
-                                       or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None),
-                                  "recipient picker to close after sending")
+                feedback = wait_for_send(device, _dump_current_tree, control)
+                if isinstance(feedback, str) and feedback == "retry":
+                    return "retry"
+                def sent_screen(t):
+                    return not picker_visible(t) and (
+                        _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None
+                        or _node_by_resource(t, BACK_TO_CAMERA_BUTTON_ID) is not None)
+                tree = feedback if feedback is not None and sent_screen(feedback) else _wait_tree(
+                    device, sent_screen, "recipient picker to close after sending")
                 if _node_by_resource(tree, CAMERA_CAPTURE_BUTTON_ID) is not None:
                     return tree  # Next snap can use this immediately verified camera.
                 ClickButton(STEP_PHASE[STEP_BACK], device).ClickNow(
@@ -294,6 +318,8 @@ def send_one_snap(
             else:
                 click_step(device, step, username_input)
             step = NEXT_STEP[step]
+        except (RunStopped, RecipientNotFound):
+            raise
         except RuntimeError:
             if step in (STEP_USER, STEP_SEND, STEP_BACK):
                 raise  # Never retry uncertain recipient selection or sending.
@@ -320,7 +346,8 @@ def _restart_snap_between_batches(device):
                       and _node_by_resource(t, CAMERA_CAPTURE_BUTTON_ID) is not None,
                       "camera after preventive Snapchat restart", timeout=30.0)
 
-def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
+def mainScript(username_input: str, points_input_raw, control=None) -> tuple[int, float]:
+    control = control or RunControl()
     logger.debug("Function mainScript received username=%s", username_input)
 
     try:
@@ -328,6 +355,10 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
     except Exception as e:
         logger.exception("Error while parsing points to int")
         raise ValueError("Points must be an integer") from e
+
+    if points_input <= 0:
+        raise ValueError("Aantal snaps moet groter dan nul zijn")
+    control.total = points_input
 
     # Start ADB daemon (best-effort)
     try:
@@ -350,15 +381,39 @@ def mainScript(username_input: str, points_input_raw) -> tuple[int, float]:
 
     try:
         while pointscounter < points_input:
+            control.check()
+            wait_for_internet(device, control)
             if snaps_since_restart >= SNAP_RESTART_INTERVAL:
                 logger.info("Preventive Snapchat restart after %s/%s completed snaps", pointscounter, points_input)
                 camera_tree = None  # Invalidate every pre-restart screen.
                 camera_tree = _restart_snap_between_batches(device)
                 snaps_since_restart = 0
                 logger.info("Snapchat camera ready; continuing at snap %s", pointscounter + 1)
-            camera_tree = send_one_snap(device, username_input,
-                                        use_last=snaps_since_restart > 0, camera_tree=camera_tree)
+            try:
+                camera_tree = send_one_snap(device, username_input,
+                                            use_last=snaps_since_restart > 0, camera_tree=camera_tree,
+                                            control=control)
+            except RecipientNotFound as exc:
+                wait_for_internet(device, control)
+                control.request("username", f"{exc}. Geef een andere zichtbare naam met !snapnaam <naam>, of !snapstop.")
+                while True:
+                    replacement = control.poll()
+                    if replacement:
+                        username_input = replacement.strip()
+                        break
+                    sleep(0.25)
+                control.resume("Nieuwe ontvangernaam ontvangen; resterende snaps worden naar deze naam gestuurd.")
+                camera_tree = _restart_snap_between_batches(device)
+                snaps_since_restart = 0
+                continue
+            if isinstance(camera_tree, str) and camera_tree == "retry":
+                wait_for_internet(device, control)
+                camera_tree = _restart_snap_between_batches(device)
+                snaps_since_restart = 0
+                continue
             pointscounter += 1
+            control.completed = pointscounter
+            control.emit("progress", "Snap bevestigd")
             snaps_since_restart += 1
 
             logger.info("Progress: %s/%s snaps sent", pointscounter, points_input)

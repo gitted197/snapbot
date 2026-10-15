@@ -11,6 +11,7 @@ from discord.ext import commands  # type: ignore
 import script
 import script_adduser
 from utils import check_adb_access, AdbAccessError
+from utils.run_control import RunControl, RunStopped
 from utils.bot_utils import setEmbed, setAddSnapEmbed, setLoggingEmbed, getLogs
 from utils.setup_logging import setup_logging
 
@@ -36,6 +37,10 @@ class BotState:
     points_counter: int = 0
     last_error: Optional[str] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    control: Optional[RunControl] = None
+    owner_id: Optional[int] = None
+    channel_id: Optional[int] = None
+    paused: bool = False
 
 state = BotState()
 
@@ -52,6 +57,9 @@ async def snap(ctx: commands.Context):
     logger.info("Snap command by: %s", booster)
     await ctx.message.delete()
 
+    if state.running:
+        await ctx.send("Er is al een run actief; gebruik !status.")
+        return
     async with state.lock:
         if state.running:
             botmsg = await ctx.send("Program is currently running. Please try again later")
@@ -68,6 +76,34 @@ async def snap(ctx: commands.Context):
 
         state.running = True
         state.last_error = None
+        state.points_counter = 0
+        state.owner_id = ctx.author.id
+        state.channel_id = ctx.channel.id
+        loop = asyncio.get_running_loop()
+
+        async def deliver(kind, message, completed, total):
+            if state.control is not run_control:
+                return
+            state.points_counter = completed
+            if kind == "paused":
+                state.paused = True
+            elif kind == "resumed":
+                state.paused = False
+            if kind != "progress":
+                await ctx.send(f"{message}\nBevestigd: {completed}/{total} snaps.",
+                               allowed_mentions=discord.AllowedMentions.none())
+
+        def notify(kind, message, completed, total):
+            future = asyncio.run_coroutine_threadsafe(deliver(kind, message, completed, total), loop)
+            def report_error(done):
+                try:
+                    done.result()
+                except Exception:
+                    logger.exception("Discord run feedback could not be delivered")
+            future.add_done_callback(report_error)
+
+        run_control = RunControl(notify)
+        state.control = run_control
 
         description = "Enter the screenname to send snaps to (or /quit): "
         embed, description = setEmbed(description, booster)
@@ -102,6 +138,8 @@ async def snap(ctx: commands.Context):
                 try:
                     await msg.delete()
                     points = int(msg.content)
+                    if points <= 0:
+                        raise ValueError("Aantal moet positief zijn")
                     break
                 except Exception:
                     botmsg = await ctx.send("Error getting points input. Please try again.")
@@ -115,12 +153,13 @@ async def snap(ctx: commands.Context):
 
             # Run blocking script in a worker thread
             try:
-                generated = await asyncio.to_thread(script.mainScript, username, points)
+                generated = await asyncio.to_thread(script.mainScript, username, points, state.control)
                 state.points_counter, elapsed_seconds = generated
             except Exception as e:
                 logger.exception("snap failed")
                 state.last_error = str(e)
-                await sent.edit(content=f"Fout: {e}", embed=None)
+                state.points_counter = state.control.completed
+                await sent.edit(content=f"Fout: {e}\nBevestigd: {state.points_counter}/{points} snaps.", embed=None)
                 return
 
             description = description + f"\nDone. Generated {state.points_counter} points."
@@ -131,6 +170,45 @@ async def snap(ctx: commands.Context):
 
         finally:
             state.running = False
+            state.paused = False
+            state.control = None
+            state.owner_id = None
+            state.channel_id = None
+
+def _owns_run(ctx):
+    return (state.control is not None and ctx.author.id == state.owner_id
+            and ctx.channel.id == state.channel_id)
+
+
+@client.command()
+async def snapnaam(ctx: commands.Context, *, naam: str):
+    if not _owns_run(ctx) or not naam.strip():
+        await ctx.send("Geen eigen run in dit kanaal beschikbaar.")
+        return
+    if not state.control.decide("username", naam.strip()):
+        await ctx.send("De run wacht momenteel niet op een nieuwe naam.")
+
+
+@client.command()
+async def snapverder(ctx: commands.Context, keuze: str):
+    if not _owns_run(ctx):
+        await ctx.send("Alleen de eigenaar van de run kan deze keuze maken.")
+        return
+    if keuze not in ("verzonden", "opnieuw"):
+        await ctx.send("Gebruik !snapverder verzonden of !snapverder opnieuw.")
+        return
+    if not state.control.decide("send", keuze):
+        await ctx.send("De run wacht momenteel niet op een verzendbeslissing.")
+
+
+@client.command()
+async def snapstop(ctx: commands.Context):
+    if not _owns_run(ctx):
+        await ctx.send("Geen eigen run in dit kanaal beschikbaar.")
+        return
+    state.control.cancelled.set()
+    await ctx.send("Stop aangevraagd. Een reeds getikte verzending kan nog onderweg zijn.")
+
 
 @client.command()
 async def addsnap(ctx: commands.Context):
@@ -196,9 +274,10 @@ async def status(ctx: commands.Context):
             description="Bot is currently not running. This message will delete in a few seconds.",
         )
     else:
+        mode = "gepauzeerd" if state.paused else "actief"
         embed = discord.Embed(
             title="Checked status for user " + checker,
-            description=f"Bot is currently running. It has generated {state.points_counter} points so far.",
+            description=f"Run {mode}. Bevestigd: {state.points_counter} snaps.",
         )
 
     sent = await ctx.send(embed=embed)
