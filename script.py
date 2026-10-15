@@ -208,6 +208,29 @@ def select_recipient(device, username, use_last):
                       "confirmation of the exact recipient")
 
 
+
+def select_recipient_with_corrections(device, username, use_last, control):
+    """Correct a not-yet-selected recipient in the existing picker."""
+    while True:
+        control.check()
+        try:
+            tree = select_recipient(device, username, use_last)
+            control.username = username
+            return tree, username
+        except RecipientNotFound as exc:
+            wait_for_internet(device, control)
+            control.request("username", f"{exc}. Geef een andere zichtbare naam met !snapnaam <naam>, of !snapstop.")
+            while True:
+                replacement = control.poll()
+                if replacement and replacement.strip():
+                    username = replacement.strip()
+                    break
+                sleep(0.25)
+            # No app restart, new photo, send, or progress update here.
+            # select_recipient clears the old search text on its next attempt.
+            use_last = False
+            control.resume("Nieuwe naam ontvangen; ik zoek deze in de huidige ontvangerlijst.")
+
 def click_step(device, step: str, username_input: str) -> None:
     phase = STEP_PHASE[step]
     resource_id = STEP_RESOURCE_ID[step]
@@ -275,7 +298,8 @@ def send_one_snap(
                     CAMERA_CAPTURE_BUTTON_ID, None, tree=camera_tree)
                 camera_tree = None  # Never reuse a tree across a tap.
             elif step == STEP_USER:
-                selection_tree = select_recipient(device, username_input, use_last and not reboot_used)
+                selection_tree, username_input = select_recipient_with_corrections(
+                    device, username_input, use_last and not reboot_used, control)
             elif step == STEP_BACK:
                 click_step(device, STEP_BACK, username_input)
                 camera_tree = _wait_tree(
@@ -359,6 +383,7 @@ def mainScript(username_input: str, points_input_raw, control=None) -> tuple[int
     if points_input <= 0:
         raise ValueError("Aantal snaps moet groter dan nul zijn")
     control.total = points_input
+    control.username = username_input
 
     # Start ADB daemon (best-effort)
     try:
@@ -389,23 +414,10 @@ def mainScript(username_input: str, points_input_raw, control=None) -> tuple[int
                 camera_tree = _restart_snap_between_batches(device)
                 snaps_since_restart = 0
                 logger.info("Snapchat camera ready; continuing at snap %s", pointscounter + 1)
-            try:
-                camera_tree = send_one_snap(device, username_input,
-                                            use_last=snaps_since_restart > 0, camera_tree=camera_tree,
-                                            control=control)
-            except RecipientNotFound as exc:
-                wait_for_internet(device, control)
-                control.request("username", f"{exc}. Geef een andere zichtbare naam met !snapnaam <naam>, of !snapstop.")
-                while True:
-                    replacement = control.poll()
-                    if replacement:
-                        username_input = replacement.strip()
-                        break
-                    sleep(0.25)
-                control.resume("Nieuwe ontvangernaam ontvangen; resterende snaps worden naar deze naam gestuurd.")
-                camera_tree = _restart_snap_between_batches(device)
-                snaps_since_restart = 0
-                continue
+            camera_tree = send_one_snap(device, username_input,
+                                        use_last=snaps_since_restart > 0, camera_tree=camera_tree,
+                                        control=control)
+            username_input = control.username
             if isinstance(camera_tree, str) and camera_tree == "retry":
                 wait_for_internet(device, control)
                 camera_tree = _restart_snap_between_batches(device)
