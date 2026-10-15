@@ -2,6 +2,7 @@ import asyncio
 import configparser
 import logging
 import os
+from utils.progress_display import ProgressDisplay
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -94,6 +95,7 @@ async def snap(ctx: commands.Context):
         state.owner_id = ctx.author.id
         state.channel_id = ctx.channel.id
         loop = asyncio.get_running_loop()
+        progress = None
 
         async def deliver(kind, message, completed, total):
             if state.control is not run_control:
@@ -103,9 +105,14 @@ async def snap(ctx: commands.Context):
                 state.paused = True
             elif kind == "resumed":
                 state.paused = False
-            if kind != "progress":
-                await ctx.send(f"{message}\nBevestigd: {completed}/{total} snaps.",
-                               allowed_mentions=discord.AllowedMentions.none())
+            if progress is not None:
+                await progress.update(
+                    completed,
+                    status="Gepauzeerd" if state.paused else "Bezig",
+                    detail=message if kind != "progress" else "",
+                    recipient=getattr(run_control, "username", None),
+                    force=kind != "progress",
+                )
 
         def notify(kind, message, completed, total):
             future = asyncio.run_coroutine_threadsafe(deliver(kind, message, completed, total), loop)
@@ -161,9 +168,8 @@ async def snap(ctx: commands.Context):
                     await asyncio.sleep(3)
                     await botmsg.delete()
 
-            description = description + str(points) + "\nNow generating. Please wait."
-            embed, description = setEmbed(description, booster)
-            await sent.edit(embed=embed)
+            progress = ProgressDisplay(sent, booster, username, points)
+            await progress.update(0, force=True)
 
             # Run blocking script in a worker thread
             try:
@@ -173,16 +179,22 @@ async def snap(ctx: commands.Context):
                 logger.exception("snap failed")
                 state.last_error = str(e)
                 state.points_counter = state.control.completed
-                await sent.edit(content=f"Fout: {e}\nBevestigd: {state.points_counter}/{points} snaps.", embed=None)
+                await progress.update(
+                    state.points_counter, status="Gestopt" if isinstance(e, RunStopped) else "Fout",
+                    detail=str(e), recipient=getattr(run_control, "username", None),
+                    force=True, final=True,
+                )
                 return
 
-            description = description + f"\nDone. Generated {state.points_counter} points."
-            embed, description = setEmbed(description, booster)
-            await sent.edit(embed=embed)
-            await asyncio.sleep(5)
-            await sent.delete()
+            await progress.update(
+                state.points_counter, status="Afgerond",
+                detail=f"Duur: {script.formatDuration(elapsed_seconds)}",
+                recipient=getattr(run_control, "username", None), force=True, final=True,
+            )
 
         finally:
+            if progress is not None:
+                progress.closed = True
             state.running = False
             state.paused = False
             state.control = None
