@@ -14,6 +14,7 @@ from utils import check_adb_access, AdbAccessError
 from utils.run_control import RunControl, RunStopped
 from utils.bot_utils import setEmbed, setAddSnapEmbed, setLoggingEmbed, getLogs
 from utils.setup_logging import setup_logging
+from utils.command_overview import overview_embed, post_startup_commands, remember_command_channel
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -50,6 +51,19 @@ client = commands.Bot(command_prefix="!", intents=intents)
 @client.event
 async def on_ready():
     logger.info("Logged in as %s", client.user)
+    await post_startup_commands(client)
+
+@client.listen("on_command")
+async def remember_channel_on_command(ctx: commands.Context):
+    if ctx.command.name != "commando":
+        await remember_command_channel(client, ctx.channel)
+
+
+@client.command(name="commando")
+async def command_overview(ctx: commands.Context):
+    await remember_command_channel(client, ctx.channel, replace=True, post=False)
+    await ctx.send(embed=overview_embed(client), allowed_mentions=discord.AllowedMentions.none())
+    client._command_overview_sent = True
 
 @client.command()
 async def snap(ctx: commands.Context):
